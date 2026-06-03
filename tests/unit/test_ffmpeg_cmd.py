@@ -1,0 +1,93 @@
+"""Tests for ffmpeg argument construction (pure, no ffmpeg execution)."""
+
+from __future__ import annotations
+
+from vlo.core.enums import Codec
+from vlo.core.models import ProbeResult, SubTrack
+from vlo.encode.ffmpeg_cmd import (
+    PIX_FMT_10BIT,
+    build_encode_command,
+    gop_for_fps,
+    subtitle_codec_overrides,
+)
+
+
+def make_probe(subs=None, **kw) -> ProbeResult:
+    base = dict(
+        path="in.mkv", size_bytes=1, duration_s=60.0, width=1920, height=1080,
+        fps=24.0, vcodec="h264", pix_fmt="yuv420p", is_hdr=False, is_dolby_vision=False,
+        video_bitrate_bps=10_000_000, overall_bitrate_bps=10_000_000,
+    )
+    base.update(kw)
+    p = ProbeResult(**base)
+    p.subs = subs or []
+    return p
+
+
+def _adjacent(args, flag):
+    """Return the value following a flag in an arg list (or None)."""
+    for i, a in enumerate(args):
+        if a == flag and i + 1 < len(args):
+            return args[i + 1]
+    return None
+
+
+def test_gop_for_fps():
+    assert gop_for_fps(24.0) == 240
+    assert gop_for_fps(23.976) == 240
+    assert gop_for_fps(0) == 240
+
+
+def test_x265_command_core_flags():
+    args = build_encode_command(
+        ffmpeg_bin="ffmpeg", input_path="in.mkv", output_path="out.mkv",
+        codec=Codec.X265, crf=20, preset="slow", probe=make_probe(),
+    )
+    assert _adjacent(args, "-c:v") == "libx265"
+    assert _adjacent(args, "-pix_fmt") == PIX_FMT_10BIT
+    assert _adjacent(args, "-crf") == "20"
+    assert _adjacent(args, "-preset") == "slow"
+    assert "-c:a" in args and _adjacent(args, "-c:a") == "copy"
+    assert _adjacent(args, "-c:s") == "copy"
+    assert _adjacent(args, "-c:t") == "copy"
+    # Explicit mapping that drops cover art and data streams.
+    assert "0:V?" in args and "0:a?" in args and "0:s?" in args and "0:t?" in args
+    assert args[-1] == "out.mkv"
+    assert "-progress" in args
+
+
+def test_svtav1_command_core_flags():
+    args = build_encode_command(
+        ffmpeg_bin="ffmpeg", input_path="in.mkv", output_path="out.mkv",
+        codec=Codec.SVTAV1, crf=28, preset="6", probe=make_probe(fps=25.0),
+    )
+    assert _adjacent(args, "-c:v") == "libsvtav1"
+    assert _adjacent(args, "-pix_fmt") == PIX_FMT_10BIT
+    assert _adjacent(args, "-preset") == "6"
+    assert _adjacent(args, "-g") == "250"  # 25fps * 10s
+    assert "-svtav1-params" in args
+
+
+def test_mov_text_subtitle_transcoded_to_srt():
+    subs = [
+        SubTrack(index=2, codec="hdmv_pgs_subtitle"),
+        SubTrack(index=3, codec="mov_text"),
+        SubTrack(index=4, codec="subrip"),
+    ]
+    overrides = subtitle_codec_overrides(make_probe(subs=subs))
+    # Only the mov_text stream (output index 1) is overridden to srt.
+    assert overrides == ["-c:s:1", "srt"]
+
+
+def test_color_metadata_preserved_for_hdr():
+    probe = make_probe(
+        is_hdr=True, color_primaries="bt2020", color_transfer="smpte2084",
+        color_space="bt2020nc",
+    )
+    args = build_encode_command(
+        ffmpeg_bin="ffmpeg", input_path="in.mkv", output_path="out.mkv",
+        codec=Codec.X265, crf=18, preset="slow", probe=probe,
+    )
+    assert _adjacent(args, "-color_primaries") == "bt2020"
+    assert _adjacent(args, "-color_trc") == "smpte2084"
+    assert _adjacent(args, "-colorspace") == "bt2020nc"

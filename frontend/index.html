@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VideoLibraryOptimizer</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">▦</span>
+      <span>VideoLibrary<strong>Optimizer</strong></span>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" data-view="scan">Scan</button>
+      <button class="tab" data-view="movies">Films</button>
+      <button class="tab" data-view="series">Séries</button>
+      <button class="tab" data-view="queue">File d'attente <span id="queue-badge" class="badge hidden">0</span></button>
+      <button class="tab" data-view="logs">Logs</button>
+      <button class="tab" data-view="settings">Réglages</button>
+    </nav>
+    <div class="conn">
+      <span id="ws-dot" class="dot offline"></span>
+      <span id="ws-label">hors ligne</span>
+    </div>
+  </header>
+
+  <main id="app"></main>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
