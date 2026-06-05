@@ -55,7 +55,8 @@ class ScanRepo:
                 """
                 INSERT INTO media_file (
                     path, size_bytes, mtime, kind, series_slug, series_title, season, episode,
-                    title, year, content_type, content_source, is_anime, duration_s, width,
+                    title, year, content_type, content_source, is_anime, reencoded_at,
+                    duration_s, width,
                     height, fps, vcodec, pix_fmt, is_hdr,
                     is_dolby_vision, video_bitrate_bps, overall_bitrate_bps, n_audio, n_subs,
                     probe_json, probed_at, bpp_real, bpp_target, overhead_ratio, est_out_bytes,
@@ -63,7 +64,7 @@ class ScanRepo:
                 ) VALUES (
                     :path, :size_bytes, :mtime, :kind, :series_slug, :series_title, :season,
                     :episode, :title, :year, :content_type, :content_source, :is_anime,
-                    :duration_s, :width, :height, :fps, :vcodec,
+                    :reencoded_at, :duration_s, :width, :height, :fps, :vcodec,
                     :pix_fmt, :is_hdr, :is_dolby_vision, :video_bitrate_bps, :overall_bitrate_bps,
                     :n_audio, :n_subs, :probe_json, :probed_at, :bpp_real, :bpp_target,
                     :overhead_ratio, :est_out_bytes, :est_gain_bytes, :score, :excluded_reason,
@@ -75,6 +76,7 @@ class ScanRepo:
                     season=excluded.season, episode=excluded.episode, title=excluded.title,
                     year=excluded.year, content_type=excluded.content_type,
                     content_source=excluded.content_source, is_anime=excluded.is_anime,
+                    reencoded_at=COALESCE(excluded.reencoded_at, media_file.reencoded_at),
                     duration_s=excluded.duration_s, width=excluded.width,
                     height=excluded.height, fps=excluded.fps, vcodec=excluded.vcodec,
                     pix_fmt=excluded.pix_fmt, is_hdr=excluded.is_hdr,
@@ -102,6 +104,7 @@ class ScanRepo:
                     "content_type": c.content_type if c else "live_action",
                     "content_source": c.content_source if c else None,
                     "is_anime": int(c.is_anime) if c else 0,
+                    "reencoded_at": mf.reencoded_at,
                     "duration_s": p.duration_s if p else None,
                     "width": p.width if p else None,
                     "height": p.height if p else None,
@@ -158,7 +161,7 @@ class ScanRepo:
         clause = "WHERE kind = ?"
         params: list[Any] = [MediaKind.MOVIE.value]
         if only_candidates:
-            clause += " AND excluded_reason IS NULL"
+            clause += " AND excluded_reason IS NULL AND reencoded_at IS NULL"
         with self._db.lock:
             rows = self._db.conn.execute(
                 f"SELECT * FROM media_file {clause} "
@@ -174,9 +177,10 @@ class ScanRepo:
                 """
                 SELECT series_slug, MAX(series_title) AS series_title,
                        COUNT(*) AS n_episodes,
-                       SUM(CASE WHEN excluded_reason IS NULL THEN 1 ELSE 0 END) AS n_candidates,
-                       COALESCE(SUM(CASE WHEN excluded_reason IS NULL THEN est_gain_bytes ELSE 0 END), 0)
-                           AS est_gain_bytes,
+                       SUM(CASE WHEN excluded_reason IS NULL AND reencoded_at IS NULL
+                                THEN 1 ELSE 0 END) AS n_candidates,
+                       COALESCE(SUM(CASE WHEN excluded_reason IS NULL AND reencoded_at IS NULL
+                                THEN est_gain_bytes ELSE 0 END), 0) AS est_gain_bytes,
                        MAX(score) AS top_score
                 FROM media_file
                 WHERE kind = ? AND series_slug IS NOT NULL
@@ -188,10 +192,11 @@ class ScanRepo:
         return [dict(r) for r in rows]
 
     def list_excluded(self) -> list[MediaFile]:
-        """All cached files that were skipped (excluded_reason set), any kind."""
+        """Cached files not proposed as candidates: skipped or already re-encoded."""
         with self._db.lock:
             rows = self._db.conn.execute(
-                "SELECT * FROM media_file WHERE excluded_reason IS NOT NULL "
+                "SELECT * FROM media_file "
+                "WHERE excluded_reason IS NOT NULL OR reencoded_at IS NOT NULL "
                 "ORDER BY excluded_reason, path"
             ).fetchall()
         return [self._row_to_media(r) for r in rows]
@@ -296,6 +301,7 @@ class ScanRepo:
             probe=probe,
             classification=classification,
             score=score,
+            reencoded_at=row["reencoded_at"],
         )
 
     @staticmethod

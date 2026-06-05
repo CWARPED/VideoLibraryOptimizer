@@ -11,7 +11,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS media_file (
     content_type        TEXT DEFAULT 'live_action',
     content_source      TEXT,
     is_anime            INTEGER DEFAULT 0,
+    reencoded_at        REAL,
     duration_s          REAL,
     width               INTEGER,
     height              INTEGER,
@@ -177,6 +178,7 @@ class Database:
         ("media_file", "content_type", "TEXT DEFAULT 'live_action'"),
         ("media_file", "content_source", "TEXT"),
         ("media_file", "is_anime", "INTEGER DEFAULT 0"),
+        ("media_file", "reencoded_at", "REAL"),
         ("reference_bpp", "content_type", "TEXT NOT NULL DEFAULT 'live_action'"),
     ]
 

@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     disk_space_margin_bytes: int = 5 * 1024**3  # 5 GiB headroom in work_dir
     duration_tolerance_pct: float = 0.5  # |out-src| must be within this % of source duration
 
+    # Encoding throughput / output naming.
+    max_parallel_encodes: int = 2  # one 1080p encode under-uses a 16c/32t CPU
+    filename_tag: str = ""  # appended to the output filename stem, e.g. " x265"
+    rewrite_codec_tags: bool = False  # replace codec tokens in name/title (x264->x265…)
+
     # Server.
     host: str = "127.0.0.1"
     port: int = 8077

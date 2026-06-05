@@ -35,18 +35,24 @@ def copy_into(src: Path, dst_dir: Path) -> Path:
     return dst
 
 
-def final_output_path(original_path: Path) -> Path:
-    """Where the re-encoded file belongs in the original folder (always .mkv)."""
+def final_output_path(original_path: Path, final_stem: str | None = None) -> Path:
+    """Where the re-encoded file belongs in the original folder (always .mkv).
+
+    ``final_stem`` overrides the filename stem (for an appended tag / rewritten
+    codec token); otherwise the original name is kept.
+    """
+    if final_stem:
+        return original_path.with_name(f"{final_stem}.mkv")
     return original_path.with_suffix(".mkv")
 
 
-def safe_replace(local_out: Path, original_path: Path) -> Path:
+def safe_replace(local_out: Path, original_path: Path, final_stem: str | None = None) -> Path:
     """Place ``local_out`` into the original folder, replacing the original.
 
     Returns the final path. The output is always MKV; if the original had a
-    different extension it is removed after the new file is in place.
+    different name/extension it is removed after the new file is in place.
     """
-    final = final_output_path(original_path)
+    final = final_output_path(original_path, final_stem)
     tmp = final.with_name(final.stem + ".vlo-tmp.mkv")
 
     shutil.copy2(_long(local_out), _long(tmp))

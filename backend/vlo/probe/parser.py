@@ -139,6 +139,7 @@ def parse_probe(data: dict[str, Any], path: str, size_bytes: int) -> ProbeResult
         is_hdr = is_dv = False
         video_bitrate = 0
         color_primaries = color_transfer = color_space = None
+        video_language = None
     else:
         width = _to_int(video_stream.get("width")) or 0
         height = _to_int(video_stream.get("height")) or 0
@@ -153,6 +154,7 @@ def parse_probe(data: dict[str, Any], path: str, size_bytes: int) -> ProbeResult
         color_primaries = video_stream.get("color_primaries")
         color_transfer = video_stream.get("color_transfer")
         color_space = video_stream.get("color_space")
+        video_language = _lang(video_stream)
 
     n_chapters = len(data.get("chapters") or [])
 
@@ -176,6 +178,7 @@ def parse_probe(data: dict[str, Any], path: str, size_bytes: int) -> ProbeResult
         audio=audio,
         subs=subs,
         n_chapters=n_chapters,
+        video_language=video_language,
         color_primaries=color_primaries,
         color_transfer=color_transfer,
         color_space=color_space,

@@ -23,6 +23,11 @@ from .schemas import ContentTypeUpdate, exclusion_category, media_to_dict
 router = APIRouter(prefix="/api", tags=["library"])
 
 
+def _is_candidate(media_dict: dict) -> bool:
+    """A file proposed for re-encode: not excluded and not already re-encoded."""
+    return media_dict.get("excluded_reason") is None and not media_dict.get("reencoded")
+
+
 def _parse_codec(value: str | None) -> Codec | None:
     if value is None:
         return None
@@ -59,7 +64,8 @@ async def list_movies(
         movies = state.scan_repo.list_movies(only_candidates=False, limit=5000, offset=0)
         _rescore(state, movies, cd, profile)
         if only_candidates:
-            movies = [m for m in movies if m.score and m.score.excluded_reason is None]
+            movies = [m for m in movies if m.score and m.score.excluded_reason is None
+                      and m.reencoded_at is None]
         movies.sort(key=lambda m: (m.score.score if m.score else 0), reverse=True)
         movies = movies[offset:offset + limit]
     else:
@@ -75,12 +81,16 @@ async def list_excluded(request: Request):
     media = get_state(request).scan_repo.list_excluded()
     out = []
     for mf in media:
-        reason = mf.score.excluded_reason if mf.score else None
+        if mf.reencoded_at is not None:
+            reason, category = "déjà réencodé par l'application", "reencoded"
+        else:
+            reason = mf.score.excluded_reason if mf.score else None
+            category = exclusion_category(reason)
         out.append({
             "filename": media_to_dict(mf)["filename"],
             "path": mf.path,
             "reason": reason,
-            "category": exclusion_category(reason),
+            "category": category,
         })
     return {"excluded": out}
 
@@ -171,9 +181,8 @@ async def get_series(
             {
                 "season": season if season != -1 else None,
                 "episodes": eps,
-                "n_candidates": sum(1 for e in eps if e["excluded_reason"] is None),
-                "est_gain_bytes": sum(e["est_gain_bytes"] or 0 for e in eps
-                                      if e["excluded_reason"] is None),
+                "n_candidates": sum(1 for e in eps if _is_candidate(e)),
+                "est_gain_bytes": sum(e["est_gain_bytes"] or 0 for e in eps if _is_candidate(e)),
             }
             for season, eps in sorted(seasons.items())
         ],

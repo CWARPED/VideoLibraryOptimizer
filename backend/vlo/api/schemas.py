@@ -55,6 +55,10 @@ class SettingsUpdate(BaseModel):
     # bpp reference tables: list of [height_min, height_max, bpp_target]
     reference_bands: list[list[float]] | None = None
     animation_bands: list[list[float]] | None = None
+    # Encoding throughput / output naming
+    max_parallel_encodes: int | None = None
+    filename_tag: str | None = None
+    rewrite_codec_tags: bool | None = None
 
 
 # --- exclusion categorisation ------------------------------------------
@@ -96,6 +100,7 @@ def media_to_dict(mf: MediaFile) -> dict[str, Any]:
         "content_type": c.content_type if c else "live_action",
         "is_anime": c.is_anime if c else False,
         "content_source": c.content_source if c else None,
+        "reencoded": mf.reencoded_at is not None,
         "duration_s": p.duration_s if p else None,
         "width": p.width if p else None,
         "height": p.height if p else None,

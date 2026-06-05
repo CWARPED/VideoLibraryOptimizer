@@ -17,7 +17,10 @@ _SCORING_KEYS = (
     "weight_overhead", "weight_gain", "gain_ref_gb",
     "min_overhead_ratio", "exclude_dolby_vision",
 )
-_KV_KEYS = ("tmdb_api_key", "tmdb_enabled", "animation_keywords")
+_KV_KEYS = (
+    "tmdb_api_key", "tmdb_enabled", "animation_keywords",
+    "max_parallel_encodes", "filename_tag", "rewrite_codec_tags",
+)
 
 
 def _bands_json(repo, content_type: str) -> list[dict]:
@@ -46,6 +49,11 @@ async def get_settings_endpoint(request: Request):
             "tmdb_api_key": repo.get("tmdb_api_key", s.tmdb_api_key),
             "tmdb_enabled": repo.get("tmdb_enabled", s.tmdb_enabled),
             "animation_keywords": repo.get("animation_keywords", DEFAULT_ANIMATION_KEYWORDS),
+        },
+        "encoding": {
+            "max_parallel_encodes": repo.get("max_parallel_encodes", s.max_parallel_encodes),
+            "filename_tag": repo.get("filename_tag", s.filename_tag),
+            "rewrite_codec_tags": repo.get("rewrite_codec_tags", s.rewrite_codec_tags),
         },
         "work_dir": repo.get("work_dir", str(s.work_dir)),
         "duration_tolerance_pct": s.duration_tolerance_pct,

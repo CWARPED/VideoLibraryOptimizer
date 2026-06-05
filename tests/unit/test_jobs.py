@@ -122,6 +122,74 @@ async def _wait_state(jobs_repo: JobsRepo, job_id: int, state: JobState, timeout
     raise AssertionError(f"timeout waiting for {state}")
 
 
+class GatedRunner:
+    """Blocks inside run() until released, to observe concurrency."""
+
+    def __init__(self):
+        self.release = asyncio.Event()
+        self.concurrent = 0
+        self.max_concurrent = 0
+
+    async def run(self, args, *, duration_s, on_progress=None, cancel_event=None):
+        self.concurrent += 1
+        self.max_concurrent = max(self.max_concurrent, self.concurrent)
+        out = Path(args[-1])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"o" * 200)
+        try:
+            await self.release.wait()
+        finally:
+            self.concurrent -= 1
+        return EncodeResult(cancelled=False, returncode=0)
+
+
+@pytest.mark.asyncio
+async def test_two_jobs_encode_in_parallel(tmp_path, db):
+    runner = GatedRunner()
+    mgr, jobs_repo, scan_repo = _build(tmp_path, db, runner)  # default max_parallel = 2
+    srcs = [_make_source(tmp_path, name=f"Film{i}.mkv") for i in range(2)]
+    media = [_persist_media(scan_repo, s) for s in srcs]
+
+    await mgr.start()
+    mgr.enqueue(media, Codec.X265, "Light")
+
+    # Wait until both jobs are ENCODING at the same time.
+    for _ in range(250):
+        encoding = [j for j in jobs_repo.list() if j.state is JobState.ENCODING]
+        if len(encoding) == 2:
+            break
+        await asyncio.sleep(0.02)
+    assert runner.max_concurrent == 2, "both encodes should run concurrently"
+
+    runner.release.set()
+    for _ in range(250):
+        awaiting = [j for j in jobs_repo.list() if j.state is JobState.AWAITING_CONFIRMATION]
+        if len(awaiting) == 2:
+            break
+        await asyncio.sleep(0.02)
+    assert len([j for j in jobs_repo.list() if j.state is JobState.AWAITING_CONFIRMATION]) == 2
+    await mgr.stop()
+
+
+@pytest.mark.asyncio
+async def test_filename_tag_applied_on_confirm(tmp_path, db):
+    src = _make_source(tmp_path, name="Movie 1080p.mkv")
+    mgr, jobs_repo, scan_repo = _build(tmp_path, db, FakeRunner(out_bytes=200))
+    SettingsRepo(db).set("filename_tag", " x265-VLO")
+    mf = _persist_media(scan_repo, src)
+
+    await mgr.start()
+    batch = mgr.enqueue([mf], Codec.X265, "Light")
+    job_id = jobs_repo.list(batch_id=batch)[0].id
+    await _wait_state(jobs_repo, job_id, JobState.AWAITING_CONFIRMATION)
+    await mgr.confirm(job_id)
+
+    final = src.with_name("Movie 1080p x265-VLO.mkv")
+    assert final.exists()
+    assert not src.exists()  # original replaced by tagged name
+    await mgr.stop()
+
+
 @pytest.mark.asyncio
 async def test_success_then_confirm_replaces_original(tmp_path, db):
     src = _make_source(tmp_path)

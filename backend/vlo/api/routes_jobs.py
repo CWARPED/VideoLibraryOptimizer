@@ -28,8 +28,11 @@ async def create_batch(req: BatchRequest, request: Request):
         else:
             media = repo.list_episodes(req.series_slug)
 
-    # Only enqueue files that are actual candidates.
-    media = [m for m in media if m.score is None or m.score.excluded_reason is None]
+    # Only enqueue actual candidates: not excluded and not already re-encoded.
+    media = [
+        m for m in media
+        if (m.score is None or m.score.excluded_reason is None) and m.reencoded_at is None
+    ]
     if not media:
         raise HTTPException(status_code=400, detail="no eligible files in selection")
 
@@ -67,13 +70,18 @@ async def get_job(job_id: int, request: Request):
 
 @router.post("/jobs/{job_id}/confirm")
 async def confirm_job(job_id: int, request: Request):
-    mgr = get_state(request).job_manager
+    state = get_state(request)
+    mgr = state.job_manager
     try:
         job = await mgr.confirm(job_id)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    # Refresh the cache for the now re-encoded file (re-probe + re-score) so it
+    # no longer shows up as a heavy candidate.
+    if job.media_file_id is not None:
+        await state.refresh_media_file(job.media_file_id)
     return job_to_dict(job)
 
 
@@ -91,6 +99,16 @@ async def reject_job(job_id: int, request: Request):
 async def cancel_job(job_id: int, request: Request):
     get_state(request).job_manager.cancel(job_id)
     return {"ok": True}
+
+
+@router.get("/stats")
+async def get_stats(request: Request):
+    """Cumulative space saved across all completed re-encodes (persistent)."""
+    repo = get_state(request).settings_repo
+    return {
+        "total_gain_bytes": repo.get("total_gain_bytes", 0) or 0,
+        "total_encodes_done": repo.get("total_encodes_done", 0) or 0,
+    }
 
 
 @router.post("/jobs/clear")

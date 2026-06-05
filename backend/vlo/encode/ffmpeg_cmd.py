@@ -61,12 +61,18 @@ def build_encode_command(
     probe: ProbeResult,
     x265_params: str = DEFAULT_X265_PARAMS,
     svtav1_params: str = DEFAULT_SVTAV1_PARAMS,
+    title: str | None = None,
     progress_to_stdout: bool = True,
 ) -> list[str]:
     """Return the full ffmpeg argument list for one re-encode.
 
     Resolution is preserved. All audio/subtitles/attachments/chapters are kept;
     audio is stream-copied. Output is always MKV.
+
+    The re-encoded video stream's stale source statistics tags (BPS, DURATION,
+    NUMBER_OF_BYTES…) are dropped so the metadata matches the new encode; the
+    video language is re-applied. ``title`` overrides the global title tag when
+    given ("" clears it).
     """
     args: list[str] = [
         ffmpeg_bin,
@@ -80,9 +86,16 @@ def build_encode_command(
         "-map", "0:s?",
         "-map", "0:t?",
         "-map_metadata", "0",
+        # Drop the source video stream's (now-stale) statistics tags; the audio
+        # and subtitle streams are copied so their stats stay valid.
+        "-map_metadata:s:v:0", "-1",
         "-map_chapters", "0",
         "-max_muxing_queue_size", "9999",
     ]
+    if probe.video_language:
+        args += ["-metadata:s:v:0", f"language={probe.video_language}"]
+    if title is not None:
+        args += ["-metadata", f"title={title}"]
 
     if codec is Codec.X265:
         args += [

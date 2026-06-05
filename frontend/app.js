@@ -52,6 +52,8 @@ const state = {
   jobs: [],
   selMovies: new Set(),
   selEpisodes: new Set(), // episode file ids selected in the open series
+  movieSort: { key: "score", dir: "desc" },
+  seriesSort: { key: "est_gain_bytes", dir: "desc" },
   scan: { running: false, done: 0, total: 0, probed: 0, cached: 0, errors: 0 },
   codec: "X265",
   profile: "Light",
@@ -97,9 +99,20 @@ function handleWS(m) {
       patchJob(m.job_id, { state: m.state, error_message: m.error });
       // Fetch fresh job for validation / sizes.
       fetchJobs();
+      if (m.state === "DONE") loadStats();
+      break;
+    case "stats":
+      setStats(m.total_gain_bytes, m.total_encodes_done);
       break;
     case "queue":
       refreshQueueBadge(m);
+      break;
+    case "media_updated":
+      // A processed file was re-probed/re-scored -> refresh the library views.
+      reloadLibrary();
+      if (state.view === "series" && state.openSeries) {
+        refreshSeriesDetail().then(() => { if (state.view === "series") renderSeriesDetail(); });
+      }
       break;
   }
 }
@@ -112,6 +125,19 @@ async function fetchJobs() {
     state.jobs = (await api("/api/jobs")).jobs;
     refreshQueueBadge();
     if (state.view === "queue") render();
+  } catch (_) {}
+}
+function setStats(totalGain, count) {
+  const el = document.getElementById("gain-total");
+  if (!el) return;
+  if (!count) { el.classList.add("hidden"); return; }
+  el.classList.remove("hidden");
+  el.textContent = `${fmtBytes(totalGain)} économisés · ${count} réencodage${count > 1 ? "s" : ""}`;
+}
+async function loadStats() {
+  try {
+    const s = await api("/api/stats");
+    setStats(s.total_gain_bytes, s.total_encodes_done);
   } catch (_) {}
 }
 function refreshQueueBadge(q) {
@@ -253,6 +279,8 @@ function renderScanProgress() {
 }
 
 const EXCL_GROUPS = [
+  { key: "reencoded", label: "Déjà réencodés par l'application", cls: "good",
+    hint: "Traités par l'app : ne sont plus proposés au réencodage." },
   { key: "unreadable", label: "Illisibles / corrompus", cls: "bad",
     hint: "ffprobe n'a pas pu lire ces fichiers (conteneur corrompu/tronqué). À re-télécharger ou réparer." },
   { key: "dolby_vision", label: "Dolby Vision (exclus par défaut)", cls: "hdr",
@@ -330,10 +358,25 @@ function gainBar(bytes, maxBytes) {
     <span class="gain-val">${fmtBytes(bytes)}</span></div>`;
 }
 
+// ---------- sortable tables (client-side) ----------
+function sortRows(arr, key, dir) {
+  const s = [...arr].sort((a, b) => (a[key] ?? 0) - (b[key] ?? 0));
+  return dir === "asc" ? s : s.reverse();
+}
+function sortArrow(st, key) {
+  return st.key === key ? (st.dir === "desc" ? " ▼" : " ▲") : "";
+}
+function applySort(st, key, rerender) {
+  if (st.key === key) st.dir = st.dir === "desc" ? "asc" : "desc";
+  else { st.key = key; st.dir = "desc"; }
+  rerender();
+}
+
 // ---------- MOVIES ----------
 function renderMovies() {
-  const ms = state.movies;
+  const ms = sortRows(state.movies, state.movieSort.key, state.movieSort.dir);
   const maxGain = ms.reduce((a, m) => Math.max(a, m.est_gain_bytes || 0), 0);
+  const ar = (k) => sortArrow(state.movieSort, k);
   const rows = ms.map(m => {
     const sel = state.selMovies.has(m.id);
     return `<tr>
@@ -358,8 +401,10 @@ function renderMovies() {
         <thead><tr>
           <th><input type="checkbox" id="m-all"></th>
           <th>Fichier</th><th>Type</th><th>Résolution</th><th class="num col-sec">Durée</th>
-          <th class="num">Taille</th><th class="num col-sec">Débit</th><th class="num">Surdébit</th>
-          <th>Gain estimé</th><th class="col-sec">Score</th>
+          <th class="num">Taille</th><th class="num col-sec">Débit</th>
+          <th class="num sortable" data-msort="overhead_ratio">Surdébit${ar("overhead_ratio")}</th>
+          <th class="sortable" data-msort="est_gain_bytes">Gain estimé${ar("est_gain_bytes")}</th>
+          <th class="col-sec sortable" data-msort="score">Score${ar("score")}</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table></div>
@@ -374,6 +419,8 @@ function renderMovies() {
   if (ms.length === 0) return;
   bindEncodeControls();
   bindTypeBadges();
+  app.querySelectorAll("[data-msort]").forEach(h => h.addEventListener("click",
+    () => applySort(state.movieSort, h.dataset.msort, renderMovies)));
   document.getElementById("m-all").addEventListener("change", e => {
     state.selMovies = e.target.checked ? new Set(ms.map(m => m.id)) : new Set();
     renderMovies();
@@ -409,6 +456,11 @@ async function encodeMovies() {
 }
 
 // ---------- SERIES ----------
+function episodeStateBadge(e) {
+  if (e.reencoded) return `<span class="chip good" title="Déjà réencodé par l'application">✓ réencodé</span>`;
+  if (e.excluded_reason) return `<span class="chip warn" title="${esc(e.excluded_reason)}">ignoré</span>`;
+  return `<span class="chip good">candidat</span>`;
+}
 function epLabel(e) {
   const sn = e.season != null ? "S" + String(e.season).padStart(2, "0") : "";
   const en = e.episode != null ? "E" + String(e.episode).padStart(2, "0") : "";
@@ -417,8 +469,9 @@ function epLabel(e) {
 
 function renderSeries() {
   if (state.openSeries) return renderSeriesDetail();
-  const ss = state.series;
+  const ss = sortRows(state.series, state.seriesSort.key, state.seriesSort.dir);
   const maxGain = ss.reduce((a, s) => Math.max(a, s.est_gain_bytes || 0), 0);
+  const ar = (k) => sortArrow(state.seriesSort, k);
   const rows = ss.map(s => `
     <tr data-slug="${esc(s.series_slug)}" class="srow">
       <td class="cell-file">${esc(s.series_title || s.series_slug)}</td>
@@ -432,10 +485,16 @@ function renderSeries() {
       <span class="muted" style="font-weight:400;font-size:13px">— triées par gain estimé</span></h2>
     ${ss.length === 0 ? `<div class="empty">Aucune série détectée. Lance un scan.</div>` : `
     <div class="panel" style="padding:0"><div class="table-wrap"><table>
-      <thead><tr><th>Série</th><th class="num">Candidats</th><th>Gain estimé</th>
-      <th class="col-sec">Score max</th><th></th></tr></thead>
+      <thead><tr><th>Série</th>
+      <th class="num sortable" data-ssort="n_candidates">Candidats${ar("n_candidates")}</th>
+      <th class="sortable" data-ssort="est_gain_bytes">Gain estimé${ar("est_gain_bytes")}</th>
+      <th class="col-sec sortable" data-ssort="top_score">Score max${ar("top_score")}</th>
+      <th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div></div>`}`;
+  app.querySelectorAll("[data-ssort]").forEach(h => h.addEventListener("click", (e) => {
+    e.stopPropagation(); applySort(state.seriesSort, h.dataset.ssort, renderSeries);
+  }));
   app.querySelectorAll(".srow").forEach(tr => tr.addEventListener("click", () => openSeries(tr.dataset.slug)));
 }
 async function openSeries(slug) {
@@ -463,7 +522,7 @@ function renderSeriesDetail() {
         <td class="num">${fmtBytes(e.size_bytes)}</td>
         <td class="num col-sec">${e.overhead_ratio ? e.overhead_ratio.toFixed(1) + "×" : "—"}</td>
         <td>${gainBar(e.est_gain_bytes, maxGain)}</td>
-        <td>${e.excluded_reason ? `<span class="chip warn" title="${esc(e.excluded_reason)}">ignoré</span>` : `<span class="chip good">candidat</span>`}</td>
+        <td>${episodeStateBadge(e)}</td>
       </tr>`).join("");
     return `
       <div class="season">
@@ -512,7 +571,7 @@ function renderSeriesDetail() {
   }));
   app.querySelectorAll("[data-cand]").forEach(b => b.addEventListener("click", () => {
     const se = s.seasons[+b.dataset.cand];
-    for (const e of se.episodes) if (!e.excluded_reason) state.selEpisodes.add(e.id);
+    for (const e of se.episodes) if (!e.excluded_reason && !e.reencoded) state.selEpisodes.add(e.id);
     renderSeriesDetail();
   }));
   document.getElementById("s-encode").addEventListener("click", encodeSeriesSelection);
@@ -690,6 +749,7 @@ async function renderSettings() {
   try { data = await api("/api/settings"); } catch (e) { return toast(e.message, true); }
   const sc = data.scoring;
   const cd = data.content_detection;
+  const enc = data.encoding;
   const profiles = state.profiles.map(p => `
     <tr>
       <td><strong>${esc(p.name)}</strong></td>
@@ -721,6 +781,19 @@ async function renderSettings() {
         <textarea id="set-kw" rows="3" style="width:100%;background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:9px">${esc((cd.animation_keywords || []).join("\\n"))}</textarea></label>
       <div class="row"><button class="btn" id="set-cd-save">Enregistrer la détection</button>
       <span class="muted">Prise en compte au prochain scan (résultats mis en cache).</span></div>
+    </div>
+
+    <div class="panel">
+      <h3 style="margin-top:0">Encodage & nom de sortie</h3>
+      <div class="row">
+        <label class="field" style="max-width:220px"><span>Encodages simultanés (1 encode 1080p exploite mal un 16c/32t)</span>
+          <input type="text" id="set-par" value="${enc.max_parallel_encodes}"></label>
+        <label class="field" style="flex:1"><span>Tag ajouté au nom de fichier (ex. «&nbsp; x265&nbsp;») — laisser vide pour ne rien ajouter</span>
+          <input type="text" id="set-tag" value="${esc(enc.filename_tag || "")}" placeholder=" x265"></label>
+      </div>
+      <label class="muted"><input type="checkbox" id="set-rw" ${enc.rewrite_codec_tags ? "checked" : ""}> Réécrire les tokens de codec dans le nom/titre (x264→x265…) — sans effet sur les noms Radarr propres</label>
+      <div class="row" style="margin-top:14px"><button class="btn" id="set-enc-save">Enregistrer</button>
+      <span class="muted">⚠️ Si Radarr/Sonarr gère tes noms, il peut renommer après coup. Métadonnées vidéo (débit) corrigées automatiquement à chaque encode.</span></div>
     </div>
 
     <div class="panel">
@@ -788,6 +861,18 @@ async function renderSettings() {
     } catch (e) { toast(e.message, true); }
   });
 
+  document.getElementById("set-enc-save").addEventListener("click", async () => {
+    const par = parseInt(document.getElementById("set-par").value, 10);
+    try {
+      await api("/api/settings", { method: "PUT", body: JSON.stringify({
+        max_parallel_encodes: Number.isFinite(par) && par > 0 ? par : 1,
+        filename_tag: document.getElementById("set-tag").value,
+        rewrite_codec_tags: document.getElementById("set-rw").checked,
+      })});
+      toast("Réglages d'encodage enregistrés");
+    } catch (e) { toast(e.message, true); }
+  });
+
   document.getElementById("set-bands-save").addEventListener("click", async () => {
     try {
       await api("/api/settings", { method: "PUT", body: JSON.stringify({
@@ -807,5 +892,6 @@ async function renderSettings() {
   connectWS();
   await reloadLibrary();
   await fetchJobs();
+  loadStats();
   render();
 })();

@@ -1,9 +1,10 @@
-"""Sequential job worker: copy in -> encode -> validate -> await -> replace.
+"""Concurrent job workers: copy in -> encode -> validate -> await -> replace.
 
-A single background task processes one job at a time (CPU encoders saturate
-all cores). Jobs that finish encoding+validation wait in
-AWAITING_CONFIRMATION without blocking the worker, which moves on to the next
-queued job; the user confirms/rejects them whenever they like.
+Up to ``max_parallel_encodes`` jobs run at once. A single 1080p x265/AV1 encode
+under-uses a many-core CPU (frame-parallelism ceiling), so running 2+ in
+parallel raises throughput; it also naturally overlaps the next job's NAS copy
+with the ongoing encodes. Jobs that finish encoding+validation wait in
+AWAITING_CONFIRMATION (off-pool) until the user confirms/rejects them.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 
+from .. import naming
 from ..config import Settings
 from ..core.enums import Codec, JobState
 from ..core.errors import DiskSpaceError, EncodeError, ProbeError
@@ -66,33 +68,52 @@ class JobManager:
         self._now = now_fn or time.time
 
         self._wake = asyncio.Event()
-        self._worker: asyncio.Task | None = None
+        self._dispatcher: asyncio.Task | None = None
         self._stopping = False
-        self._current_job_id: int | None = None
-        self._cancel_event: threading.Event | None = None
-        self._last_progress_sent: float = -1.0
+        # job_id -> running task / per-job cancel flag / last broadcast progress
+        self._active: dict[int, asyncio.Task] = {}
+        self._cancel_events: dict[int, threading.Event] = {}
+        self._last_progress: dict[int, float] = {}
 
     # --- lifecycle ------------------------------------------------------
     async def start(self) -> None:
         requeued = self._jobs.reset_interrupted()
-        if requeued:
-            self._wake.set()
-        self._worker = asyncio.create_task(self._run_worker(), name="vlo-job-worker")
-        # If there are already-queued jobs from a previous run, kick the worker.
-        if self._jobs.next_queued() is not None:
+        self._dispatcher = asyncio.create_task(self._run_dispatcher(), name="vlo-dispatcher")
+        if requeued or self._jobs.next_queued() is not None:
             self._wake.set()
 
     async def stop(self) -> None:
         self._stopping = True
         self._wake.set()
-        if self._cancel_event is not None:
-            self._cancel_event.set()
-        if self._worker is not None:
-            self._worker.cancel()
+        for ev in list(self._cancel_events.values()):
+            ev.set()
+        for task in list(self._active.values()):
+            task.cancel()
+        if self._dispatcher is not None:
+            self._dispatcher.cancel()
             try:
-                await self._worker
+                await self._dispatcher
             except asyncio.CancelledError:
                 pass
+
+    # --- config helpers -------------------------------------------------
+    def _max_parallel(self) -> int:
+        n = self._cfg_repo.get("max_parallel_encodes", self._settings.max_parallel_encodes)
+        try:
+            return max(1, int(n))
+        except (TypeError, ValueError):
+            return 1
+
+    def _naming_settings(self) -> tuple[str, bool]:
+        tag = self._cfg_repo.get("filename_tag", self._settings.filename_tag) or ""
+        rewrite = self._cfg_repo.get("rewrite_codec_tags", self._settings.rewrite_codec_tags)
+        return tag, bool(rewrite)
+
+    def _output_naming(self, job: Job) -> tuple[str, str | None]:
+        """Return (final_stem, title_override) for a job's output."""
+        tag, rewrite = self._naming_settings()
+        stem = naming.output_stem(Path(job.source_path).stem, job.codec, tag=tag, rewrite=rewrite)
+        return stem, (stem if rewrite else None)
 
     # --- enqueue --------------------------------------------------------
     def enqueue(
@@ -133,6 +154,7 @@ class JobManager:
             self._set_state(job_id, JobState.FAILED, error_message="local output missing")
             raise EncodeError("local output missing for confirmation")
 
+        final_stem, _ = self._output_naming(job)
         self._set_state(job_id, JobState.COPYING_BACK)
         try:
             ensure_space(
@@ -140,19 +162,32 @@ class JobManager:
                 margin_bytes=self._settings.disk_space_margin_bytes,
             )
             self._set_state(job_id, JobState.REPLACING)
-            final = await loop.run_in_executor(None, pipeline.safe_replace, out_local, dest)
+            final = await loop.run_in_executor(
+                None, pipeline.safe_replace, out_local, dest, final_stem
+            )
         except (OSError, DiskSpaceError) as exc:
             self._set_state(job_id, JobState.FAILED, error_message=f"replace failed: {exc}")
             raise
 
-        # Update the cache so the new file (possibly new extension) is tracked.
+        # Update the cache so the new file (possibly new name) is tracked.
         if job.media_file_id is not None:
             st = final.stat()
             self._scan.update_path(job.media_file_id, str(final), st.st_size, st.st_mtime)
 
         self._cleanup_workdir(job)
         self._set_state(job_id, JobState.DONE, finished_at=self._now())
+        self._record_gain(job)
         return self._jobs.get(job_id)  # type: ignore[return-value]
+
+    def _record_gain(self, job: Job) -> None:
+        """Accumulate persistent space-saved stats (survive queue cleanup)."""
+        total = (self._cfg_repo.get("total_gain_bytes", 0) or 0) + (job.gain_bytes or 0)
+        done = (self._cfg_repo.get("total_encodes_done", 0) or 0) + 1
+        self._cfg_repo.set("total_gain_bytes", total)
+        self._cfg_repo.set("total_encodes_done", done)
+        self._bus.publish({
+            "type": "stats", "total_gain_bytes": total, "total_encodes_done": done,
+        })
 
     def reject(self, job_id: int) -> None:
         job = self._require(job_id, JobState.AWAITING_CONFIRMATION)
@@ -163,46 +198,69 @@ class JobManager:
         job = self._jobs.get(job_id)
         if job is None or job.state.is_terminal:
             return
-        if job.id == self._current_job_id and self._cancel_event is not None:
-            self._cancel_event.set()  # worker will finalise as CANCELLED
-        elif job.state in (JobState.QUEUED, JobState.AWAITING_CONFIRMATION):
+        ev = self._cancel_events.get(job_id)
+        if ev is not None:
+            ev.set()  # active job: copy/encode aborts -> finalised CANCELLED by the worker
+            return
+        if job.state in (JobState.QUEUED, JobState.AWAITING_CONFIRMATION):
             self._cleanup_workdir(job)
             self._set_state(job_id, JobState.CANCELLED, finished_at=self._now())
 
-    # --- worker ---------------------------------------------------------
-    async def _run_worker(self) -> None:
+    # --- dispatcher -----------------------------------------------------
+    async def _run_dispatcher(self) -> None:
         while not self._stopping:
-            job = self._jobs.next_queued()
-            if job is None:
-                self._wake.clear()
-                await self._wake.wait()
-                continue
-            try:
-                await self._process_job(job)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - last-resort guard
-                # Capture the full traceback in the log buffer, and never store
-                # an empty error message (some exceptions have a blank str()).
-                logger.exception("job %s failed", job.id)
-                msg = f"{type(exc).__name__}: {exc}".strip().rstrip(":").strip()
-                if job.id is not None:
-                    self._cleanup_workdir(self._jobs.get(job.id) or job)
-                    self._set_state(
-                        job.id, JobState.FAILED,
-                        error_message=msg or type(exc).__name__,
-                        finished_at=self._now(),
-                    )
-            finally:
-                self._current_job_id = None
-                self._cancel_event = None
+            while not self._stopping and len(self._active) < self._max_parallel():
+                job = self._claim_next()
+                if job is None:
+                    break
+                ev = threading.Event()
+                self._cancel_events[job.id] = ev
+                task = asyncio.create_task(
+                    self._process_job_safe(job, ev), name=f"vlo-job-{job.id}"
+                )
+                self._active[job.id] = task
+                task.add_done_callback(self._make_done_cb(job.id))
 
-    async def _process_job(self, job: Job) -> None:
+            self._wake.clear()
+            if len(self._active) < self._max_parallel() and self._jobs.next_queued() is not None:
+                continue  # capacity freed and work waiting -> refill immediately
+            await self._wake.wait()
+
+    def _claim_next(self) -> Job | None:
+        """Pick the next queued job and reserve it (so it isn't claimed twice)."""
+        job = self._jobs.next_queued()
+        if job is None:
+            return None
+        self._jobs.update(job.id, state=JobState.COPYING_IN, started_at=self._now())
+        job.state = JobState.COPYING_IN
+        return job
+
+    def _make_done_cb(self, job_id: int) -> Callable[[asyncio.Task], None]:
+        def cb(_task: asyncio.Task) -> None:
+            self._active.pop(job_id, None)
+            self._cancel_events.pop(job_id, None)
+            self._last_progress.pop(job_id, None)
+            self._wake.set()
+        return cb
+
+    async def _process_job_safe(self, job: Job, cancel_event: threading.Event) -> None:
+        try:
+            await self._process_job(job, cancel_event)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - last-resort guard
+            logger.exception("job %s failed", job.id)
+            msg = f"{type(exc).__name__}: {exc}".strip().rstrip(":").strip()
+            self._cleanup_workdir(self._jobs.get(job.id) or job)
+            self._set_state(
+                job.id, JobState.FAILED,
+                error_message=msg or type(exc).__name__, finished_at=self._now(),
+            )
+
+    async def _process_job(self, job: Job, cancel_event: threading.Event) -> None:
         assert job.id is not None
         loop = asyncio.get_running_loop()
-        self._current_job_id = job.id
-        self._cancel_event = threading.Event()
-        self._last_progress_sent = -1.0
+        self._last_progress[job.id] = -1.0
 
         source = Path(job.source_path)
         work_root = self._work_dir()
@@ -210,9 +268,8 @@ class JobManager:
         logger.info("job %s: starting (%s, %s/%s)", job.id, job.source_path,
                     job.codec.value, job.profile_name)
 
-        # Disk-space check (need room for the local copy + the output).
         est_out = self._estimated_output(job)
-        self._set_state(job.id, JobState.COPYING_IN, started_at=self._now(), work_dir=str(work))
+        self._set_state(job.id, JobState.COPYING_IN, work_dir=str(work))
         ensure_space(
             work_root, (job.size_src_bytes or 0) + est_out,
             margin_bytes=self._settings.disk_space_margin_bytes,
@@ -226,6 +283,10 @@ class JobManager:
         except OSError as exc:
             raise EncodeError(f"copy from source failed: {exc}") from exc
         logger.info("job %s: copied locally (%s)", job.id, local_src)
+        if cancel_event.is_set():
+            self._cleanup_workdir(job)
+            self._set_state(job.id, JobState.CANCELLED, finished_at=self._now())
+            return
 
         # 2) Re-probe the local copy for accurate stream/colour info.
         try:
@@ -237,6 +298,7 @@ class JobManager:
         out_local = work / "out.mkv"
         profile = self._cfg_repo.get_profile(job.profile_name)
         params = params_for(profile, job.codec) if profile else ""
+        _, title = self._output_naming(job)
         args = build_encode_command(
             ffmpeg_bin=self._ffmpeg,
             input_path=str(local_src),
@@ -245,6 +307,7 @@ class JobManager:
             crf=job.crf,
             preset=job.preset,
             probe=src_probe,
+            title=title,
             **self._codec_param_kwarg(job.codec, params),
         )
         self._set_state(job.id, JobState.ENCODING, out_path_local=str(out_local))
@@ -254,7 +317,7 @@ class JobManager:
                 args,
                 duration_s=src_probe.duration_s,
                 on_progress=lambda p: self._on_progress(job.id, p),  # type: ignore[arg-type]
-                cancel_event=self._cancel_event,
+                cancel_event=cancel_event,
             )
         except FileNotFoundError as exc:
             raise EncodeError(f"ffmpeg not found ({self._ffmpeg}): {exc}") from exc
@@ -322,10 +385,11 @@ class JobManager:
         return job.size_src_bytes or 0
 
     def _on_progress(self, job_id: int, p: EncodeProgress) -> None:
-        # Throttle: only emit on a >=0.5% change.
-        if p.progress - self._last_progress_sent < 0.005 and p.progress < 1.0:
+        # Throttle: only emit on a >=0.5% change (per job).
+        last = self._last_progress.get(job_id, -1.0)
+        if p.progress - last < 0.005 and p.progress < 1.0:
             return
-        self._last_progress_sent = p.progress
+        self._last_progress[job_id] = p.progress
         speed = f"{p.speed:.2f}x" if p.speed else None
         self._jobs.update(job_id, progress=p.progress, speed=speed, eta_s=p.eta_s)
         self._bus.publish({
@@ -357,11 +421,11 @@ class JobManager:
         self._broadcast_queue()
 
     def _broadcast_queue(self) -> None:
-        running = self._current_job_id
-        queued = [j.id for j in self._jobs.list(state=JobState.QUEUED)]
-        awaiting = [j.id for j in self._jobs.list(state=JobState.AWAITING_CONFIRMATION)]
         self._bus.publish({
-            "type": "queue", "running": running, "queued": queued, "awaiting": awaiting,
+            "type": "queue",
+            "running": list(self._active.keys()),
+            "queued": [j.id for j in self._jobs.list(state=JobState.QUEUED)],
+            "awaiting": [j.id for j in self._jobs.list(state=JobState.AWAITING_CONFIRMATION)],
         })
 
     def _cleanup_workdir(self, job: Job) -> None:

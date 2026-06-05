@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -11,11 +12,12 @@ from dataclasses import dataclass, field
 from .config import Settings, get_settings
 from .logbuffer import setup_logging
 from .core.enums import MediaKind
+from .core.errors import ProbeError
 from .core.models import Classification, ProbeResult, ScoreResult
 from .metadata.keywords import DEFAULT_ANIMATION_KEYWORDS, looks_like_animation
 from .metadata.tmdb import TmdbClient
 from .probe.service import ProbeService
-from .scan.classifier import slugify
+from .scan.classifier import classify, slugify
 from .scan.scanner import ScanProgress, ScanService
 from .scoring.score import ScoringConfig, compute_score
 from .storage.db import Database
@@ -188,6 +190,44 @@ class AppState:
 
     def cancel_scan(self) -> None:
         self._scan_cancel = True
+
+    # --- post-processing cache refresh ---------------------------------
+    async def refresh_media_file(self, file_id: int) -> None:
+        """Re-probe and re-score a file after it was re-encoded in place.
+
+        Without this, the cache keeps the source's old bitrate/score and the
+        file keeps showing up as a heavy candidate until the next full scan.
+        Preserves the manual/TMDB content type.
+        """
+        mf = self.scan_repo.get_by_id(file_id)
+        if mf is None or not os.path.exists(mf.path):
+            return
+        try:
+            probe = await asyncio.to_thread(self.probe_service.probe, mf.path)
+        except ProbeError:
+            logging.getLogger("vlo.jobs").warning("refresh: could not probe %s", mf.path)
+            return
+
+        classification = classify(mf.path)
+        if mf.classification:  # keep the resolved content type (manual/tmdb)
+            classification.content_type = mf.classification.content_type
+            classification.is_anime = mf.classification.is_anime
+            classification.content_source = mf.classification.content_source
+        score = compute_score(probe, classification, self.scoring_config())
+
+        st = os.stat(mf.path)
+        mf.probe = probe
+        mf.classification = classification
+        mf.score = score
+        mf.size_bytes = st.st_size
+        mf.mtime = st.st_mtime
+        mf.reencoded_at = time.time()  # mark as processed -> no longer proposed
+        self.scan_repo.upsert(mf, time.time())
+        self.broadcaster.publish({"type": "media_updated", "id": file_id})
+        logging.getLogger("vlo.jobs").info(
+            "refresh: %s rescored (overhead %.2f, %s)",
+            mf.path, score.overhead_ratio, score.excluded_reason or "candidate",
+        )
 
 
 def build_app_state(settings: Settings | None = None) -> AppState:

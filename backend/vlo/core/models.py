@@ -51,6 +51,7 @@ class ProbeResult:
     audio: list[AudioTrack] = field(default_factory=list)
     subs: list[SubTrack] = field(default_factory=list)
     n_chapters: int = 0
+    video_language: str | None = None
     # Colour metadata, preserved on re-encode (especially for HDR10).
     color_primaries: str | None = None
     color_transfer: str | None = None
@@ -111,6 +112,7 @@ class MediaFile:
     probe: ProbeResult | None = None
     classification: Classification | None = None
     score: ScoreResult | None = None
+    reencoded_at: float | None = None  # set once this app has re-encoded the file
 
 
 @dataclass(slots=True)

@@ -79,6 +79,36 @@ def test_mov_text_subtitle_transcoded_to_srt():
     assert overrides == ["-c:s:1", "srt"]
 
 
+def test_video_stream_stats_dropped_and_language_reapplied():
+    probe = make_probe()
+    probe.video_language = "fre"
+    args = build_encode_command(
+        ffmpeg_bin="ffmpeg", input_path="in.mkv", output_path="out.mkv",
+        codec=Codec.X265, crf=20, preset="slow", probe=probe,
+    )
+    # Stale source video stats (BPS/DURATION/...) are dropped for the video stream.
+    assert _adjacent(args, "-map_metadata:s:v:0") == "-1"
+    # Video language is re-applied (cleared by the line above otherwise).
+    assert _adjacent(args, "-metadata:s:v:0") == "language=fre"
+
+
+def test_title_override_applied():
+    args = build_encode_command(
+        ffmpeg_bin="ffmpeg", input_path="in.mkv", output_path="out.mkv",
+        codec=Codec.X265, crf=20, preset="slow", probe=make_probe(), title="New Title",
+    )
+    assert _adjacent(args, "-metadata") == "title=New Title"
+
+
+def test_no_title_override_by_default():
+    args = build_encode_command(
+        ffmpeg_bin="ffmpeg", input_path="in.mkv", output_path="out.mkv",
+        codec=Codec.X265, crf=20, preset="slow", probe=make_probe(),
+    )
+    # Without an explicit title, we don't add a global -metadata title= override.
+    assert "title=" not in " ".join(args)
+
+
 def test_color_metadata_preserved_for_hdr():
     probe = make_probe(
         is_hdr=True, color_primaries="bt2020", color_transfer="smpte2084",

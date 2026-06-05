@@ -91,6 +91,17 @@ async def test_full_pipeline_encode_confirm_replace(tmp_path):
 
         # Cache now points at the (same .mkv) replaced file with new size.
         assert state.scan_repo.get_by_id(mf.id).size_bytes == src.stat().st_size
+
+        # Refresh re-probes + re-scores the processed file so it no longer looks
+        # like a heavy candidate (lower bitrate -> lower overhead, often excluded).
+        before = state.scan_repo.get_by_id(mf.id)
+        await state.refresh_media_file(mf.id)
+        after = state.scan_repo.get_by_id(mf.id)
+        assert after.probe.video_bitrate_bps < before.probe.video_bitrate_bps
+        assert after.score.overhead_ratio < before.score.overhead_ratio
+        # Marked as processed -> no longer proposed as a candidate.
+        assert after.reencoded_at is not None
+        assert mf.id not in {m.id for m in state.scan_repo.list_movies(only_candidates=True)}
     finally:
         await state.job_manager.stop()
         state.db.close()

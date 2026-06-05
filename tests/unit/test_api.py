@@ -24,7 +24,7 @@ def client(tmp_path: Path):
     state.db.close()
 
 
-def _add_movie(state, path="/lib/Big.Movie.1080p.mkv", excluded=None) -> int:
+def _add_movie(state, path="/lib/Big.Movie.1080p.mkv", excluded=None, reencoded=False) -> int:
     probe = ProbeResult(
         path=path, size_bytes=8_000_000_000, duration_s=3600.0, width=1920, height=1080,
         fps=24.0, vcodec="h264", pix_fmt="yuv420p", is_hdr=False, is_dolby_vision=False,
@@ -36,6 +36,7 @@ def _add_movie(state, path="/lib/Big.Movie.1080p.mkv", excluded=None) -> int:
         score=ScoreResult(bpp_real=0.3, bpp_target=0.045, overhead_ratio=6.0,
                           est_out_bytes=4_000_000_000, est_gain_bytes=4_000_000_000,
                           score=85.0, excluded_reason=excluded),
+        reencoded_at=123.0 if reencoded else None,
     )
     return state.scan_repo.upsert(mf, 1.0)
 
@@ -248,6 +249,42 @@ def test_content_resolver_respects_manual_and_keyword(client):
         "/lib/Films/Plain.mkv", Classification(kind=MediaKind.MOVIE, title="Plain")
     )
     assert ct3 == "live_action" and src3 == "default"
+
+
+def test_reencoded_not_proposed_but_indicated(client):
+    c, state = client
+    _add_movie(state, "/lib/Fresh.mkv")  # candidate
+    fid = _add_movie(state, "/lib/Done.mkv", reencoded=True)  # already re-encoded
+
+    # Not proposed among candidates.
+    cands = c.get("/api/movies").json()["movies"]
+    assert {m["filename"] for m in cands} == {"Fresh.mkv"}
+
+    # Visible (with the flag) when listing everything.
+    allm = {m["filename"]: m for m in c.get("/api/movies?only_candidates=false").json()["movies"]}
+    assert allm["Done.mkv"]["reencoded"] is True
+    assert allm["Fresh.mkv"]["reencoded"] is False
+
+    # Surfaced in the excluded list under the 'reencoded' category.
+    ex = c.get("/api/excluded").json()["excluded"]
+    done = next(e for e in ex if e["filename"] == "Done.mkv")
+    assert done["category"] == "reencoded"
+
+    # Cannot be enqueued again.
+    r = c.post("/api/jobs/batch", json={"codec": "X265", "profile_name": "Light",
+                                        "file_ids": [fid]})
+    assert r.status_code == 400
+
+
+def test_stats_endpoint(client):
+    c, state = client
+    assert c.get("/api/stats").json() == {"total_gain_bytes": 0, "total_encodes_done": 0}
+    # Simulate two completed encodes accumulating persistent gain.
+    state.settings_repo.set("total_gain_bytes", 5_000_000_000)
+    state.settings_repo.set("total_encodes_done", 2)
+    s = c.get("/api/stats").json()
+    assert s["total_gain_bytes"] == 5_000_000_000
+    assert s["total_encodes_done"] == 2
 
 
 def test_logs_endpoint(client):

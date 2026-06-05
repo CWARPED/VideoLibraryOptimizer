@@ -5,7 +5,7 @@
 
 Scanne une bibliothèque vidéo (films + séries), repère les fichiers **trop lourds
 pour leur résolution/durée**, les classe par priorité de réencodage, et permet de
-les réencoder **façon « QTZ »** (4K/HD *light* mais qualitatif) en toute sécurité.
+les réencoder en **léger mais qualitatif** (4K/HD *light*) en toute sécurité.
 
 - **Résolution conservée**, **toutes les pistes audio copiées** (sans réencode),
   **tous les sous-titres conservés**, chapitres/métadonnées préservés, sortie **MKV**.
