@@ -42,6 +42,9 @@ $pth = Join-Path $runtime "python$xy._pth"
 if (-not (Test-Path $pth)) { throw "._pth introuvable: $pth" }
 $lines = Get-Content $pth | ForEach-Object { $_ -replace '^\s*#\s*import site', 'import site' }
 if ($lines -notcontains 'Lib\site-packages') { $lines += 'Lib\site-packages' }
+# The embeddable Python IGNORES PYTHONPATH when a ._pth exists, so the app
+# package dir must be listed here (relative to runtime\python.exe -> ..\backend).
+if ($lines -notcontains '..\backend') { $lines += '..\backend' }
 $lines | Set-Content $pth
 
 # 3. Bootstrap pip -----------------------------------------------------------

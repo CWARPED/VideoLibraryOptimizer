@@ -10,3 +10,6 @@ __pycache__/
 /data/
 /work/
 .env
+
+# Portable build artifacts
+dist/
