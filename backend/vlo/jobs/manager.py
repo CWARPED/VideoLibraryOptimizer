@@ -13,6 +13,7 @@ import asyncio
 import logging
 import shutil
 import threading
+import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
@@ -74,6 +75,7 @@ class JobManager:
         self._active: dict[int, asyncio.Task] = {}
         self._cancel_events: dict[int, threading.Event] = {}
         self._last_progress: dict[int, float] = {}
+        self._last_progress_t: dict[int, float] = {}
 
     # --- lifecycle ------------------------------------------------------
     async def start(self) -> None:
@@ -240,6 +242,7 @@ class JobManager:
             self._active.pop(job_id, None)
             self._cancel_events.pop(job_id, None)
             self._last_progress.pop(job_id, None)
+            self._last_progress_t.pop(job_id, None)
             self._wake.set()
         return cb
 
@@ -391,11 +394,15 @@ class JobManager:
         return job.size_src_bytes or 0
 
     def _on_progress(self, job_id: int, p: EncodeProgress) -> None:
-        # Throttle: only emit on a >=0.5% change (per job).
+        # Emit on a >=0.5% change, or at least every 2s, so the bar/ETA stay live
+        # on slow encodes (a long video crosses 0.5% only every few minutes).
         last = self._last_progress.get(job_id, -1.0)
-        if p.progress - last < 0.005 and p.progress < 1.0:
+        last_t = self._last_progress_t.get(job_id, 0.0)
+        now = time.monotonic()
+        if p.progress < 1.0 and (p.progress - last) < 0.005 and (now - last_t) < 2.0:
             return
         self._last_progress[job_id] = p.progress
+        self._last_progress_t[job_id] = now
         speed = f"{p.speed:.2f}x" if p.speed else None
         self._jobs.update(job_id, progress=p.progress, speed=speed, eta_s=p.eta_s)
         self._bus.publish({

@@ -18,6 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..core.errors import EncodeError
+from .kill_on_close import bind_process_lifetime
 
 
 @dataclass(slots=True)
@@ -83,6 +84,8 @@ class EncodeRunner:
             errors="replace",
             bufsize=1,
         )
+        # Ensure ffmpeg dies with us (no orphan surviving a --reload/crash).
+        job_handle = bind_process_lifetime(proc.pid)
 
         stderr_lines: list[str] = []
 
@@ -98,7 +101,11 @@ class EncodeRunner:
 
         current: dict[str, str] = {}
         assert proc.stdout is not None
-        for raw in proc.stdout:
+        # Use readline rather than ``for raw in proc.stdout``: iterating the pipe
+        # uses a BufferedReader read-ahead that withholds lines until ~8 KB has
+        # accumulated, so on a slow encode the tiny -progress blocks (~220 B each)
+        # arrive only every few minutes, making the UI look frozen.
+        for raw in iter(proc.stdout.readline, ""):
             line = raw.strip()
             if "=" not in line:
                 continue
@@ -115,6 +122,8 @@ class EncodeRunner:
 
         proc.wait()
         stderr_thread.join(timeout=5)
+        if job_handle is not None:
+            job_handle.close()  # process already exited; just release the job
 
         if cancel_event is not None and cancel_event.is_set():
             return EncodeResult(cancelled=True, returncode=proc.returncode or -1)

@@ -30,7 +30,10 @@ echo [VLO] Fermez cette fenetre pour arreter l'application.
 echo.
 
 REM --- Ouvrir le navigateur apres un court delai, puis lancer le serveur ---
+REM NB: pas de --reload : un rechargement pendant un encodage tuerait/orphelinerait
+REM ffmpeg (et peut figer le serveur). Pour developper, lancer manuellement avec
+REM --reload --reload-dir backend, mais jamais pendant un encodage.
 start "" /b cmd /c "timeout /t 2 >nul & start http://%HOST%:%PORT%"
-"%PYEXE%" -m uvicorn vlo.main:app --host %HOST% --port %PORT% --reload --reload-dir backend
+"%PYEXE%" -m uvicorn vlo.main:app --host %HOST% --port %PORT%
 
 pause
