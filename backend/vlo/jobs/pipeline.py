@@ -12,7 +12,15 @@ import asyncio
 import os
 import shutil
 import subprocess
+import threading
 from pathlib import Path
+
+# Chunk size for the cancellable copy (8 MiB balances syscalls vs. cancel latency).
+_COPY_CHUNK = 8 * 1024 * 1024
+
+
+class CopyCancelled(Exception):
+    """Raised by :func:`copy_into` when the cancel event fires mid-copy."""
 
 
 def _long(path: Path) -> str:
@@ -27,12 +35,39 @@ def _long(path: Path) -> str:
     return s
 
 
-def copy_into(src: Path, dst_dir: Path) -> Path:
-    """Copy ``src`` into ``dst_dir`` keeping its name; return the new path."""
+def copy_into(
+    src: Path, dst_dir: Path, cancel_event: threading.Event | None = None
+) -> Path:
+    """Copy ``src`` into ``dst_dir`` keeping its name; return the new path.
+
+    The copy runs in chunks and checks ``cancel_event`` between chunks, so a
+    cancellation during a large (NAS) copy aborts promptly. On cancel the
+    partial destination is removed and :class:`CopyCancelled` is raised.
+    """
     dst_dir.mkdir(parents=True, exist_ok=True)
     dst = dst_dir / src.name
-    shutil.copy2(_long(src), _long(dst))
+    s, d = _long(src), _long(dst)
+    try:
+        with open(s, "rb", buffering=0) as fsrc, open(d, "wb", buffering=0) as fdst:
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise CopyCancelled()
+                buf = fsrc.read(_COPY_CHUNK)
+                if not buf:
+                    break
+                fdst.write(buf)
+    except CopyCancelled:
+        _silent_remove(d)
+        raise
+    shutil.copystat(s, d)  # preserve mtime/permissions like copy2
     return dst
+
+
+def _silent_remove(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def final_output_path(original_path: Path, final_stem: str | None = None) -> Path:

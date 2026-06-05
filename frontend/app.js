@@ -762,8 +762,8 @@ async function renderSettings() {
     <tr>
       <td><strong>${esc(p.name)}</strong></td>
       <td><span class="chip">${profileTier(i, np)}</span></td>
-      <td class="num">${p.crf_x265}</td><td>${esc(p.preset_x265)}</td><td class="num">${p.floor_x265}</td>
-      <td class="num">${p.crf_av1}</td><td class="num">${p.preset_av1}</td><td class="num">${p.floor_av1}</td>
+      <td class="num">${p.crf_x265}</td><td>${esc(p.preset_x265)}</td>
+      <td class="num">${p.crf_av1}</td><td class="num">${p.preset_av1}</td>
     </tr>`).join("");
 
   app.innerHTML = `
@@ -822,10 +822,20 @@ async function renderSettings() {
     <div class="panel">
       <h3 style="margin-top:0">Profils d'encodage</h3>
       <div class="muted" style="margin-bottom:8px">Du plus qualitatif au plus compressé.</div>
-      <div class="table-wrap"><table><thead><tr><th>Profil</th><th>Niveau</th><th class="num">CRF x265</th><th>Preset x265</th><th class="num">Floor x265</th>
-      <th class="num">CRF AV1</th><th class="num">Preset AV1</th><th class="num">Floor AV1</th></tr></thead>
+      <div class="table-wrap"><table><thead><tr><th>Profil</th><th>Niveau</th><th class="num">CRF x265</th><th>Preset x265</th>
+      <th class="num">CRF AV1</th><th class="num">Preset AV1</th></tr></thead>
       <tbody>${profiles}</tbody></table></div>
-      <div class="muted" style="margin-top:8px">CRF plus bas = meilleure qualité / fichier plus gros. Floor = compression max supposée.</div>
+      <div class="muted" style="margin-top:8px">CRF plus bas = meilleure qualité / fichier plus gros. Le gain estimé est calculé à partir du CRF et de la table bits/pixel ci-dessus.</div>
+    </div>
+
+    <div class="panel">
+      <h3 style="margin-top:0">ffmpeg</h3>
+      <div id="ffmpeg-info" class="muted">Chargement…</div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn" id="ff-check">Vérifier les mises à jour</button>
+        <button class="btn" id="ff-update">Mettre à jour ffmpeg</button>
+      </div>
+      <div class="muted" style="margin-top:8px">Build GPL (libx265 + libsvtav1). La mise à jour est impossible pendant un encodage.</div>
     </div>
 
     <div class="panel">
@@ -892,6 +902,36 @@ async function renderSettings() {
       toast("Tables enregistrées — relance un scan pour recalculer");
     } catch (e) { toast(e.message, true); }
   });
+
+  loadFfmpegInfo();
+  document.getElementById("ff-check").addEventListener("click", () => loadFfmpegInfo());
+  document.getElementById("ff-update").addEventListener("click", async () => {
+    const btn = document.getElementById("ff-update");
+    btn.disabled = true; btn.textContent = "Téléchargement…";
+    try {
+      const r = await api("/api/ffmpeg/update", { method: "POST" });
+      toast("ffmpeg mis à jour" + (r.version ? ` (${r.version})` : ""));
+      await loadFfmpegInfo();
+    } catch (e) { toast(e.message, true); }
+    finally { btn.disabled = false; btn.textContent = "Mettre à jour ffmpeg"; }
+  });
+}
+
+async function loadFfmpegInfo() {
+  const el = document.getElementById("ffmpeg-info");
+  if (!el) return;
+  el.textContent = "Chargement…";
+  let d;
+  try { d = await api("/api/ffmpeg"); } catch (e) { el.textContent = "Erreur : " + e.message; return; }
+  let status;
+  if (!d.version) status = `<span class="chip bad">❌ ffmpeg introuvable</span>`;
+  else if (d.update_available === true) status = `<span class="chip warn">⬆️ mise à jour disponible</span>`;
+  else if (d.update_available === false) status = `<span class="chip good">✅ à jour</span>`;
+  else status = `<span class="chip">⚠️ vérification impossible (hors-ligne)</span>`;
+  const ver = d.version ? esc(d.version) : "—";
+  const date = d.build_date ? ` · build ${esc(d.build_date)}` : "";
+  el.innerHTML = `${status}<div style="margin-top:6px">Version : <strong>${ver}</strong>${date}</div>`
+    + `<div class="muted" style="margin-top:4px">${esc(d.path || "")}</div>`;
 }
 
 // ---------- boot ----------

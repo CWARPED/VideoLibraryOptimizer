@@ -73,14 +73,14 @@ class AppState:
         )
 
     def scoring_config_for(self, codec, profile_name: str) -> ScoringConfig:
-        """Scoring config whose output estimate uses the chosen codec+profile floor."""
+        """Scoring config whose output estimate is computed for the chosen codec+CRF."""
         from dataclasses import replace
 
         base = self.scoring_config()
         profile = self.settings_repo.get_profile(profile_name)
         if profile is None:
             return base
-        return replace(base, rank_floor_ratio=profile.floor_for(codec))
+        return replace(base, rank_codec=codec, rank_crf=profile.crf_for(codec))
 
     # --- content-type resolution (TMDB -> cache -> keyword -> default) --
     def make_content_resolver(self) -> ContentFn:

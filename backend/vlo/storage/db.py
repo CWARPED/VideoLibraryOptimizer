@@ -144,10 +144,14 @@ _DEFAULT_X265_PARAMS = "profile=main10:aq-mode=3:psy-rd=2.0:psy-rdoq=1.0:rc-look
 _DEFAULT_SVTAV1_PARAMS = "tune=0:scd=1:enable-overlays=1"
 
 # (name, crf_x265, crf_av1, preset_x265, preset_av1, floor_x265, floor_av1)
+# Ordered quality -> most compressed (lower CRF = higher quality). The floor_* columns
+# are no longer used by the gain estimate (CRF drives it) and are kept at 0.0.
 _DEFAULT_PROFILES: list[tuple[str, int, int, str, int, float, float]] = [
-    ("Archive", 18, 24, "slow", 4, 0.45, 0.40),
-    ("Light", 20, 28, "slow", 6, 0.70, 0.65),
-    ("Balanced", 22, 30, "slow", 6, 0.55, 0.50),
+    ("Archive", 18, 24, "slow", 4, 0.0, 0.0),
+    ("Light", 20, 28, "slow", 6, 0.0, 0.0),
+    ("Balanced", 22, 30, "slow", 6, 0.0, 0.0),
+    ("Compact", 26, 34, "slow", 6, 0.0, 0.0),
+    ("Mini", 28, 36, "slow", 6, 0.0, 0.0),
 ]
 
 
@@ -221,18 +225,18 @@ class Database:
                     "VALUES (?, ?, ?, 'animation')",
                     _DEFAULT_REFERENCE_BPP_ANIM,
                 )
-            cur = self._conn.execute("SELECT COUNT(*) AS c FROM encode_profile")
-            if cur.fetchone()["c"] == 0:
-                self._conn.executemany(
-                    "INSERT INTO encode_profile "
-                    "(name, crf_x265, crf_av1, preset_x265, preset_av1, floor_x265, floor_av1, "
-                    " x265_params, svtav1_params) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    [
-                        (*p, _DEFAULT_X265_PARAMS, _DEFAULT_SVTAV1_PARAMS)
-                        for p in _DEFAULT_PROFILES
-                    ],
-                )
+            # Insert any missing default profiles (adds new tiers like Compact/Mini to
+            # existing databases without overwriting user-edited profiles; name is PK).
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO encode_profile "
+                "(name, crf_x265, crf_av1, preset_x265, preset_av1, floor_x265, floor_av1, "
+                " x265_params, svtav1_params) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (*p, _DEFAULT_X265_PARAMS, _DEFAULT_SVTAV1_PARAMS)
+                    for p in _DEFAULT_PROFILES
+                ],
+            )
             self._conn.commit()
 
     def close(self) -> None:

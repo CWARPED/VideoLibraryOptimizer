@@ -323,3 +323,29 @@ async def test_no_gain_marks_failed(tmp_path, db):
     assert jobs_repo.get(job_id).state is JobState.FAILED
     assert src.stat().st_size == 100
     await mgr.stop()
+
+
+def test_copy_into_is_cancellable(tmp_path):
+    """A set cancel event aborts the copy and removes the partial file."""
+    import threading
+
+    from vlo.jobs import pipeline
+
+    src = tmp_path / "big.bin"
+    src.write_bytes(b"x" * (32 * 1024 * 1024))  # 32 MiB > one chunk
+    dst_dir = tmp_path / "work"
+
+    ev = threading.Event()
+    ev.set()  # already cancelled -> aborts on the first chunk check
+    with pytest.raises(pipeline.CopyCancelled):
+        pipeline.copy_into(src, dst_dir, ev)
+    assert not (dst_dir / "big.bin").exists()  # partial file cleaned up
+
+
+def test_copy_into_completes_without_cancel(tmp_path):
+    from vlo.jobs import pipeline
+
+    src = tmp_path / "a.bin"
+    src.write_bytes(b"hello world" * 1000)
+    out = pipeline.copy_into(src, tmp_path / "work")
+    assert out.read_bytes() == src.read_bytes()

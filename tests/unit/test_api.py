@@ -49,7 +49,7 @@ def test_health(client):
 def test_default_profiles_present(client):
     c, _ = client
     names = {p["name"] for p in c.get("/api/profiles").json()["profiles"]}
-    assert names == {"Light", "Balanced", "Archive"}
+    assert names == {"Archive", "Light", "Balanced", "Compact", "Mini"}
 
 
 def test_settings_roundtrip(client):
@@ -108,12 +108,12 @@ def test_unknown_profile_rejected(client):
 def test_estimate_depends_on_codec_and_profile(client):
     c, state = client
     _add_movie(state, "/lib/Big.Movie.1080p.mkv")
-    # x265 Light (floor 0.70) vs AV1 Archive (floor 0.40): AV1/Archive must
-    # estimate a smaller output -> a larger gain.
-    a = c.get("/api/movies?codec=X265&profile=Light").json()["movies"][0]
-    b = c.get("/api/movies?codec=SVTAV1&profile=Archive").json()["movies"][0]
-    assert b["est_gain_bytes"] > a["est_gain_bytes"]
-    assert b["est_out_bytes"] < a["est_out_bytes"]
+    # Same codec, two profiles: Mini (CRF 28, compressed) must estimate a smaller
+    # output -> a larger gain than Archive (CRF 18, high quality).
+    archive = c.get("/api/movies?codec=X265&profile=Archive").json()["movies"][0]
+    mini = c.get("/api/movies?codec=X265&profile=Mini").json()["movies"][0]
+    assert mini["est_gain_bytes"] > archive["est_gain_bytes"]
+    assert mini["est_out_bytes"] < archive["est_out_bytes"]
 
 
 def test_work_dir_setting_roundtrip(client, tmp_path):
@@ -293,3 +293,22 @@ def test_logs_endpoint(client):
     logging.getLogger("vlo.test").warning("hello-from-test")
     logs = c.get("/api/logs?level=WARNING").json()["logs"]
     assert any("hello-from-test" in r["message"] for r in logs)
+
+
+def test_ffmpeg_info(client, monkeypatch):
+    c, _ = client
+    from vlo import ffmpeg_dist
+    monkeypatch.setattr(ffmpeg_dist, "current_info", lambda p: {"version": "n7.1", "build_date": "20260101"})
+    monkeypatch.setattr(ffmpeg_dist, "latest_release", lambda: {"published_at": "2026-06-04T00:00:00Z", "tag": "latest"})
+    monkeypatch.setattr(ffmpeg_dist, "update_available", lambda p: True)
+    d = c.get("/api/ffmpeg").json()
+    assert d["version"] == "n7.1"
+    assert d["update_available"] is True
+    assert d["latest_published_at"].startswith("2026-06-04")
+
+
+def test_ffmpeg_update_refused_while_encoding(client, monkeypatch):
+    c, state = client
+    monkeypatch.setattr(state.job_manager, "has_active", lambda: True)
+    r = c.post("/api/ffmpeg/update")
+    assert r.status_code == 409

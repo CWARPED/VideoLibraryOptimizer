@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 
+from .. import ffmpeg_dist
 from ..core.models import EncodeProfile
 from ..metadata.keywords import DEFAULT_ANIMATION_KEYWORDS
 from .common import get_state
@@ -111,3 +113,52 @@ async def update_profile(name: str, update: ProfileUpdate, request: Request):
         raise HTTPException(status_code=404, detail=f"unknown profile: {name}")
     repo.upsert_profile(EncodeProfile(name=name, **update.model_dump()))
     return {"ok": True}
+
+
+def _ffmpeg_info_blocking(ffmpeg: str) -> dict:
+    """Gather ffmpeg version + remote release info (blocking subprocess/network)."""
+    info = ffmpeg_dist.current_info(ffmpeg)
+    rel = ffmpeg_dist.latest_release()
+    update = None
+    if info and info.get("build_date") and rel and rel.get("published_at"):
+        remote = rel["published_at"][:10].replace("-", "")
+        if remote.isdigit():
+            update = remote > info["build_date"]
+    return {
+        "path": ffmpeg,
+        "bundled": Path(ffmpeg).is_file() and Path(ffmpeg).is_absolute(),
+        "version": info["version"] if info else None,
+        "build_date": info["build_date"] if info else None,
+        "latest_published_at": rel["published_at"] if rel else None,
+        "update_available": update,
+    }
+
+
+@router.get("/ffmpeg")
+async def ffmpeg_info(request: Request):
+    """Current ffmpeg version + whether a newer build is available."""
+    ffmpeg, _ = get_state(request).settings.resolve_binaries()
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _ffmpeg_info_blocking, ffmpeg)
+
+
+@router.post("/ffmpeg/update")
+async def ffmpeg_update(request: Request):
+    """Download the latest ffmpeg build (refused while an encode is running)."""
+    state = get_state(request)
+    if state.job_manager.has_active():
+        raise HTTPException(
+            status_code=409,
+            detail="Un encodage est en cours ; impossible de mettre à jour ffmpeg maintenant.",
+        )
+    ffmpeg, _ = state.settings.resolve_binaries()
+    dest = Path(ffmpeg).parent if Path(ffmpeg).is_absolute() else Path("ffmpeg/bin")
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(
+            None, lambda: ffmpeg_dist.download_latest(dest, force=True)
+        )
+    except ffmpeg_dist.FfmpegFetchError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    info = ffmpeg_dist.current_info(str(dest / "ffmpeg.exe"))
+    return {"ok": True, "version": info["version"] if info else None}

@@ -5,9 +5,10 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from ..core.enums import Codec
 from ..core.models import Classification, ProbeResult, ScoreResult
 from .estimate import estimate_output_bytes
-from .reference import HDR_MULTIPLIER, bpp_target_for_height
+from .reference import HDR_MULTIPLIER, bpp_target_for_height, expected_bpp_scale
 
 # Overhead saturates at 8x the target bitrate (log2(8) == 3).
 _OVERHEAD_LOG_CAP = 3.0
@@ -22,8 +23,11 @@ class ScoringConfig:
     gain_ref_gb: float = 10.0
     min_overhead_ratio: float = 1.1
     exclude_dolby_vision: bool = True
-    # Representative floor used for ranking (actual per-job floor is chosen at encode time).
-    rank_floor_ratio: float = 0.55
+    # Codec+CRF the estimate is computed for; None -> baseline (representative) estimate.
+    rank_codec: Codec | None = None
+    rank_crf: int | None = None
+    # Safety floor: never predict the video below this fraction of the source video.
+    video_floor_ratio: float = 0.10
 
     def bands_for(self, content_type: str) -> list[tuple[int, int, float]] | None:
         """Pick the bpp target table for the content type (falls back to live-action)."""
@@ -58,14 +62,19 @@ def compute_score(
     bpp_real = probe.video_bitrate_bps / pixels_per_sec
     overhead_ratio = bpp_real / bpp_target if bpp_target > 0 else 0.0
 
+    factor = (
+        expected_bpp_scale(config.rank_codec, config.rank_crf)
+        if config.rank_codec is not None and config.rank_crf is not None
+        else 1.0
+    )
     est_out = estimate_output_bytes(
         size_src_bytes=probe.size_bytes,
+        video_bitrate_bps=probe.video_bitrate_bps,
         bpp_target=bpp_target,
-        width=probe.width,
-        height=probe.height,
-        fps=probe.fps,
+        pixels_per_sec=pixels_per_sec,
         duration_s=probe.duration_s,
-        floor_ratio=config.rank_floor_ratio,
+        crf_factor=factor,
+        video_floor_ratio=config.video_floor_ratio,
     )
     est_gain = max(0, probe.size_bytes - est_out)
 

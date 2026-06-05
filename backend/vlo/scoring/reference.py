@@ -2,6 +2,31 @@
 
 from __future__ import annotations
 
+from ..core.enums import Codec
+
+# CRF at which the bpp target table represents a "good" (baseline) encode, per codec.
+BASELINE_CRF: dict[Codec, int] = {Codec.X265: 22, Codec.SVTAV1: 30}
+
+# Size at equal perceptual quality, relative to x265 (the bpp table is x265-calibrated).
+# SVT-AV1 yields ~25-30% smaller files than HEVC at equal quality.
+CODEC_EFFICIENCY: dict[Codec, float] = {Codec.X265: 1.0, Codec.SVTAV1: 0.72}
+
+
+def crf_factor(codec: Codec, crf: int) -> float:
+    """Scale the bpp target by the chosen CRF (~ each 6 CRF halves the bitrate).
+
+    Returns >1 for a lower CRF (higher quality, bigger file) and <1 for a higher
+    CRF (more compressed), relative to the codec's baseline CRF.
+    """
+    baseline = BASELINE_CRF.get(codec, 22)
+    return 2.0 ** (-(crf - baseline) / 6.0)
+
+
+def expected_bpp_scale(codec: Codec, crf: int) -> float:
+    """Combined CRF and codec-efficiency multiplier applied to the bpp target."""
+    return crf_factor(codec, crf) * CODEC_EFFICIENCY.get(codec, 1.0)
+
+
 # Default bands used when the DB has not been consulted: (height_min, height_max, bpp).
 DEFAULT_BANDS: list[tuple[int, int, float]] = [
     (0, 576, 0.060),

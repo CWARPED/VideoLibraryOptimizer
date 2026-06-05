@@ -275,11 +275,17 @@ class JobManager:
             margin_bytes=self._settings.disk_space_margin_bytes,
         )
 
-        # 1) Copy the (possibly NAS) source to local work dir.
+        # 1) Copy the (possibly NAS) source to local work dir (cancellable mid-copy).
         if not source.exists():
             raise EncodeError(f"source file not found: {source}")
         try:
-            local_src = await loop.run_in_executor(None, pipeline.copy_into, source, work)
+            local_src = await loop.run_in_executor(
+                None, pipeline.copy_into, source, work, cancel_event
+            )
+        except pipeline.CopyCancelled:
+            self._cleanup_workdir(job)
+            self._set_state(job.id, JobState.CANCELLED, finished_at=self._now())
+            return
         except OSError as exc:
             raise EncodeError(f"copy from source failed: {exc}") from exc
         logger.info("job %s: copied locally (%s)", job.id, local_src)
@@ -419,6 +425,10 @@ class JobManager:
             payload["error"] = fields["error_message"]
         self._bus.publish(payload)
         self._broadcast_queue()
+
+    def has_active(self) -> bool:
+        """True if at least one job is currently encoding (binary in use)."""
+        return bool(self._active)
 
     def _broadcast_queue(self) -> None:
         self._bus.publish({

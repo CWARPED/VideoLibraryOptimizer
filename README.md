@@ -81,6 +81,27 @@ python -m venv .venv
 # puis ouvrir http://127.0.0.1:8077
 ```
 
+## Distribution portable (zéro installation)
+
+Pour un utilisateur sans Python ni ffmpeg : un paquet autonome qui s'extrait
+n'importe où et se lance par double-clic.
+
+**Pour l'utilisateur final** : extraire le zip, double-clic sur **`start.bat`**.
+Au tout premier lancement, ffmpeg est **téléchargé automatiquement** (une seule
+fois, ~80 Mo) ; les lancements suivants sont immédiats. Aucune installation de
+Python n'est requise (un runtime est embarqué). Les mises à jour de ffmpeg se font
+ensuite depuis **Réglages → ffmpeg**.
+
+**Pour le mainteneur** : générer le paquet (nécessite PowerShell 7) :
+
+```powershell
+pwsh packaging/build_portable.ps1 -Zip
+# -> dist/VideoLibraryOptimizer-portable.zip
+```
+
+Le script télécharge un CPython « embeddable », y installe les dépendances, copie
+`backend/` + `frontend/` + le launcher, et produit le zip.
+
 ## Utilisation
 
 1. **Scan** : saisir le chemin racine, lancer. (Coche **« Forcer la ré-analyse »**
