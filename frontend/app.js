@@ -199,9 +199,16 @@ function render() {
 }
 
 // ---------- shared encode controls ----------
+// Position-based quality descriptor (profiles are ordered quality -> compressed).
+function profileTier(i, n) {
+  if (i === 0) return "qualité max";
+  if (i === n - 1) return "compression max";
+  return "intermédiaire";
+}
 function encodeControls() {
-  const opts = state.profiles.map(p =>
-    `<option value="${esc(p.name)}" ${p.name === state.profile ? "selected" : ""}>${esc(p.name)}</option>`).join("");
+  const n = state.profiles.length;
+  const opts = state.profiles.map((p, i) =>
+    `<option value="${esc(p.name)}" ${p.name === state.profile ? "selected" : ""}>${esc(p.name)} — ${profileTier(i, n)}</option>`).join("");
   return `
     <label class="field" style="margin:0">
       <span>Codec</span>
@@ -750,9 +757,11 @@ async function renderSettings() {
   const sc = data.scoring;
   const cd = data.content_detection;
   const enc = data.encoding;
-  const profiles = state.profiles.map(p => `
+  const np = state.profiles.length;
+  const profiles = state.profiles.map((p, i) => `
     <tr>
       <td><strong>${esc(p.name)}</strong></td>
+      <td><span class="chip">${profileTier(i, np)}</span></td>
       <td class="num">${p.crf_x265}</td><td>${esc(p.preset_x265)}</td><td class="num">${p.floor_x265}</td>
       <td class="num">${p.crf_av1}</td><td class="num">${p.preset_av1}</td><td class="num">${p.floor_av1}</td>
     </tr>`).join("");
@@ -812,7 +821,8 @@ async function renderSettings() {
 
     <div class="panel">
       <h3 style="margin-top:0">Profils d'encodage</h3>
-      <div class="table-wrap"><table><thead><tr><th>Profil</th><th class="num">CRF x265</th><th>Preset x265</th><th class="num">Floor x265</th>
+      <div class="muted" style="margin-bottom:8px">Du plus qualitatif au plus compressé.</div>
+      <div class="table-wrap"><table><thead><tr><th>Profil</th><th>Niveau</th><th class="num">CRF x265</th><th>Preset x265</th><th class="num">Floor x265</th>
       <th class="num">CRF AV1</th><th class="num">Preset AV1</th><th class="num">Floor AV1</th></tr></thead>
       <tbody>${profiles}</tbody></table></div>
       <div class="muted" style="margin-top:8px">CRF plus bas = meilleure qualité / fichier plus gros. Floor = compression max supposée.</div>
@@ -887,6 +897,8 @@ async function renderSettings() {
 // ---------- boot ----------
 (async function boot() {
   try { state.profiles = (await api("/api/profiles")).profiles; } catch (_) {}
+  // Defensive: order quality -> most compressed (lower CRF = higher quality).
+  state.profiles.sort((a, b) => a.crf_x265 - b.crf_x265);
   if (state.profiles.length && !state.profiles.find(p => p.name === state.profile))
     state.profile = state.profiles[0].name;
   connectWS();

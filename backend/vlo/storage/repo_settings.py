@@ -17,7 +17,8 @@ class SettingsRepo:
     def list_profiles(self) -> list[EncodeProfile]:
         with self._db.lock:
             rows = self._db.conn.execute(
-                "SELECT * FROM encode_profile ORDER BY name"
+                # Ordered quality -> most compressed (lower CRF = higher quality).
+                "SELECT * FROM encode_profile ORDER BY crf_x265"
             ).fetchall()
         return [self._row_to_profile(r) for r in rows]
 

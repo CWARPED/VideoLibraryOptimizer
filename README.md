@@ -10,13 +10,17 @@ les réencoder en **léger mais qualitatif** (4K/HD *light*) en toute sécurité
 - **Résolution conservée**, **toutes les pistes audio copiées** (sans réencode),
   **tous les sous-titres conservés**, chapitres/métadonnées préservés, sortie **MKV**.
 - Codec au choix : **HEVC x265 10-bit** ou **SVT-AV1 10-bit**.
-- Profils de qualité **CRF** prédéfinis (Light / Balanced / Archive), modifiables.
+- Profils de qualité **CRF** prédéfinis, classés **du plus qualitatif au plus
+  compressé** : **Archive** → **Light** → **Balanced** (tous modifiables).
 - **Détection animation/anime** (TMDB + repli mots-clés) avec cible bits/pixel
   dédiée — un anime est jugé « bien encodé » selon des critères d'animation.
 - Sélection explicite de films, de **saisons entières** ou d'**épisodes à l'unité**.
+- **Encodages en parallèle** (réglable) pour exploiter les CPU multi-cœurs.
 - Workflow sûr : le fichier (souvent sur NAS) est **copié en local**, réencodé,
   **validé** (durée, pistes, lisibilité, gain), puis — après **confirmation
   manuelle** — remis dans son dossier d'origine (remplacement atomique).
+- **Suivi des fichiers déjà traités** : un fichier réencodé n'est plus reproposé
+  et le **gain de place total cumulé** est affiché dans la barre de menu.
 
 > Interface web locale, mono-utilisateur, pensée pour tourner sur la machine qui
 > encode (testé sur Ryzen 9 9950X3D).
@@ -27,18 +31,28 @@ les réencoder en **léger mais qualitatif** (4K/HD *light*) en toute sécurité
   avec cache (un fichier inchangé n'est pas ré-analysé).
 - **Score de priorité composite** : surdébit (bits/pixel réel vs cible par
   résolution **et par type de contenu**) + gain d'espace estimé, recalculé à la
-  volée selon le codec/profil choisi.
-- **Films** : table triable, responsive, multi-sélection, gain affiché en barre.
+  volée selon le codec/profil choisi. Le cache d'un fichier est **rafraîchi**
+  après traitement (re-probe + re-score) pour refléter le nouveau débit.
+- **Films** : table triable (surdébit / gain / score), responsive, multi-sélection,
+  gain affiché en barre.
 - **Séries** : liste triée par gain ; détail par saison avec sélection
   d'épisodes à l'unité, « tout cocher » par saison, et **« Sélectionner les
   candidats »** en un clic.
 - **Type de contenu** : badge **Film / Animation / Anime** par fichier,
   corrigeable d'un clic (verrouillé contre le re-scan).
+- **Encodages parallèles** : plusieurs jobs simultanés (nombre réglable), chacun
+  annulable individuellement.
 - **File d'attente** : progression temps réel (WebSocket), validation manuelle
   avant remplacement, **nettoyage** (global + par job), reprise après crash.
+- **Déjà traité** : les fichiers réencodés par l'app sont marqués, exclus des
+  candidats et regroupés à part ; **compteur de gain total** dans la barre de menu.
+- **Nom de sortie** : tag optionnel ajouté au nom de fichier et réécriture
+  optionnelle des tokens de codec (x264→x265…). Métadonnées de débit vidéo
+  corrigées automatiquement à chaque encode.
 - **Logs** intégrés (avec stderr ffmpeg complet en cas d'échec).
 - **Réglages** : clé TMDB, mots-clés de repli, tables bits/pixel
-  (live action + animation), profils CRF, dossier de travail local, pondérations.
+  (live action + animation), profils CRF, encodages simultanés, tag/réécriture du
+  nom, dossier de travail local, pondérations.
 
 ## Prérequis
 
@@ -103,7 +117,8 @@ backend/vlo/
   metadata/            Client TMDB + détection mots-clés
   scoring/             Tables bpp (live/anim), estimation, score composite (pur)
   encode/              Construction args ffmpeg, runner (-progress), validation
-  jobs/                File séquentielle, machine à états, copie/remplacement sûr
+  naming.py            Tag de sortie + réécriture des tokens de codec
+  jobs/                File parallèle, machine à états, copie/remplacement sûr
   api/                 Endpoints FastAPI + WebSocket
   ws/                  Broadcaster pub/sub
   storage/             SQLite (cache scan, jobs, profils, réglages, métadonnées)
@@ -124,8 +139,10 @@ sous la `SelectorEventLoop` de Windows (mode `--reload`).
 
 ## Notes & avertissements
 
-- **Encodage CPU séquentiel** (un fichier à la fois) : x265/AV1 en preset lent
-  saturent déjà tous les cœurs.
+- **Encodage logiciel (CPU)** uniquement — x265/AV1 en preset lent, pour la
+  qualité (pas de Quick Sync / NVENC / AMF). Le nombre d'**encodages simultanés**
+  est réglable : un seul encode 1080p exploite mal un CPU 16c/32t, plusieurs en
+  parallèle saturent mieux les cœurs.
 - **HDR10** : métadonnées colorimétriques recopiées. **Dolby Vision** exclu par
   défaut (un réencode CPU casse souvent la métadonnée DV) — activable dans les
   réglages.
