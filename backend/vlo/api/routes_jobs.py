@@ -101,6 +101,24 @@ async def cancel_job(job_id: int, request: Request):
     return {"ok": True}
 
 
+@router.post("/jobs/{job_id}/pause")
+async def pause_job(job_id: int, request: Request):
+    try:
+        get_state(request).job_manager.pause(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"ok": True}
+
+
+@router.post("/jobs/{job_id}/resume")
+async def resume_job(job_id: int, request: Request):
+    try:
+        get_state(request).job_manager.resume(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"ok": True}
+
+
 @router.get("/stats")
 async def get_stats(request: Request):
     """Cumulative space saved across all completed re-encodes (persistent)."""

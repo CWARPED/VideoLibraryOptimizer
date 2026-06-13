@@ -103,7 +103,7 @@ class JobsRepo:
 
     def reset_interrupted(self) -> int:
         """On startup, requeue jobs that were mid-flight when the app stopped."""
-        active = [JobState.COPYING_IN.value, JobState.ENCODING.value, JobState.VALIDATING.value]
+        active = [s.value for s in JobState if s.is_active_in_worker]
         placeholders = ", ".join("?" for _ in active)
         with self._db.lock:
             cur = self._db.conn.execute(

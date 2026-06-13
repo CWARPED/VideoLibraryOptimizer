@@ -390,6 +390,7 @@ function renderMovies() {
       <td><input type="checkbox" data-mid="${m.id}" ${sel ? "checked" : ""}></td>
       <td class="cell-file">${esc(m.filename)} ${m.is_hdr ? '<span class="chip hdr">HDR</span>' : ""}</td>
       <td>${typeBadge(m)}</td>
+      <td>${codecBadge(m.vcodec)}</td>
       <td>${fmtRes(m.width, m.height)}</td>
       <td class="num col-sec">${fmtDur(m.duration_s)}</td>
       <td class="num">${fmtBytes(m.size_bytes)}</td>
@@ -407,7 +408,7 @@ function renderMovies() {
       <div class="table-wrap"><table>
         <thead><tr>
           <th><input type="checkbox" id="m-all"></th>
-          <th>Fichier</th><th>Type</th><th>Résolution</th><th class="num col-sec">Durée</th>
+          <th>Fichier</th><th>Type</th><th>Codec</th><th>Résolution</th><th class="num col-sec">Durée</th>
           <th class="num">Taille</th><th class="num col-sec">Débit</th>
           <th class="num sortable" data-msort="overhead_ratio">Surdébit${ar("overhead_ratio")}</th>
           <th class="sortable" data-msort="est_gain_bytes">Gain estimé${ar("est_gain_bytes")}</th>
@@ -468,6 +469,19 @@ function episodeStateBadge(e) {
   if (e.excluded_reason) return `<span class="chip warn" title="${esc(e.excluded_reason)}">ignoré</span>`;
   return `<span class="chip good">candidat</span>`;
 }
+const _CODEC_LABELS = {
+  hevc: "HEVC", h265: "HEVC", av1: "AV1", h264: "H.264", avc: "H.264",
+  vc1: "VC-1", mpeg2video: "MPEG-2", mpeg4: "MPEG-4", vp9: "VP9", vp8: "VP8",
+  msmpeg4v3: "DivX", wmv3: "WMV3",
+};
+function codecBadge(vcodec) {
+  if (!vcodec) return "—";
+  const key = String(vcodec).toLowerCase();
+  const label = _CODEC_LABELS[key] || vcodec.toUpperCase();
+  // HEVC/AV1 are the efficient targets -> highlight as "good", legacy codecs neutral.
+  const cls = (key === "hevc" || key === "h265" || key === "av1") ? "good" : "";
+  return `<span class="chip ${cls}" title="Codec vidéo : ${esc(label)}">${esc(label)}</span>`;
+}
 function epLabel(e) {
   const sn = e.season != null ? "S" + String(e.season).padStart(2, "0") : "";
   const en = e.episode != null ? "E" + String(e.episode).padStart(2, "0") : "";
@@ -525,6 +539,7 @@ function renderSeriesDetail() {
         <td>${epLabel(e)}</td>
         <td class="cell-file">${esc(e.filename)}</td>
         <td>${typeBadge(e)}</td>
+        <td>${codecBadge(e.vcodec)}</td>
         <td>${fmtRes(e.width, e.height)}</td>
         <td class="num">${fmtBytes(e.size_bytes)}</td>
         <td class="num col-sec">${e.overhead_ratio ? e.overhead_ratio.toFixed(1) + "×" : "—"}</td>
@@ -541,7 +556,7 @@ function renderSeriesDetail() {
           <button class="btn ghost sm" data-cand="${idx}" ${se.n_candidates === 0 ? "disabled" : ""}>Sélectionner les candidats</button>
         </div>
         <div class="body"><div class="table-wrap"><table>
-          <thead><tr><th></th><th>Ép.</th><th>Fichier</th><th>Type</th><th>Résolution</th>
+          <thead><tr><th></th><th>Ép.</th><th>Fichier</th><th>Type</th><th>Codec</th><th>Résolution</th>
           <th class="num">Taille</th><th class="num col-sec">Surdébit</th><th>Gain</th><th>État</th></tr></thead>
           <tbody>${eps}</tbody></table></div></div>
       </div>`;
@@ -640,6 +655,9 @@ function jobCard(j) {
   if (j.state === "ENCODING") {
     body = `<div class="progress"><span style="width:${pct}%"></span></div>
       <div class="meta" style="margin-top:6px">${pct}% · ${j.speed || "—"} · ETA ${fmtDur(j.eta_s)}</div>`;
+  } else if (j.state === "PAUSED") {
+    body = `<div class="progress paused"><span style="width:${pct}%"></span></div>
+      <div class="meta" style="margin-top:6px">⏸ En pause · ${pct}%</div>`;
   } else if (j.state === "AWAITING_CONFIRMATION") {
     body = validationBlock(j) + `<div class="row" style="margin-top:10px">
       <button class="btn good sm" data-act="confirm">Valider et remplacer</button>
@@ -651,16 +669,26 @@ function jobCard(j) {
   } else {
     body = `<div class="meta">${stateLabel(j.state)}</div>`;
   }
-  const cancellable = ["QUEUED", "ENCODING", "COPYING_IN"].includes(j.state);
   const terminal = TERMINAL_STATES.includes(j.state);
+  let actions = "";
+  if (j.state === "ENCODING") {
+    actions = `<button class="btn ghost sm" data-act="pause" title="Mettre en pause">⏸ Pause</button>
+      <button class="btn bad sm" data-act="forcestop" title="Forcer l'arrêt">⏹ Arrêter</button>`;
+  } else if (j.state === "PAUSED") {
+    actions = `<button class="btn good sm" data-act="resume" title="Reprendre">▶ Reprendre</button>
+      <button class="btn bad sm" data-act="forcestop" title="Forcer l'arrêt">⏹ Arrêter</button>`;
+  } else if (["QUEUED", "COPYING_IN"].includes(j.state)) {
+    actions = `<button class="btn ghost sm" data-act="cancel">Annuler</button>`;
+  } else if (terminal) {
+    actions = `<button class="btn ghost sm job-del" data-del="${j.id}" title="Retirer de la liste">✕</button>`;
+  }
   return `<div class="job" id="job-${j.id}">
     <div class="head">
       <div><div class="name">${esc(j.filename)}</div>
       <div class="meta">${j.codec} · ${esc(j.profile_name)} · CRF ${j.crf} · preset ${esc(j.preset)}</div></div>
       <div style="display:flex;gap:8px;align-items:center">
         <span class="state ${j.state}">${stateLabel(j.state)}</span>
-        ${cancellable ? `<button class="btn ghost sm" data-act="cancel">Annuler</button>` : ""}
-        ${terminal ? `<button class="btn ghost sm job-del" data-del="${j.id}" title="Retirer de la liste">✕</button>` : ""}
+        ${actions}
       </div>
     </div>
     ${body}
@@ -677,16 +705,25 @@ function validationBlock(j) {
 function stateLabel(s) {
   return ({
     QUEUED: "En attente", COPYING_IN: "Copie locale…", ENCODING: "Encodage",
-    VALIDATING: "Validation…", AWAITING_CONFIRMATION: "À valider",
+    PAUSED: "En pause", VALIDATING: "Validation…", AWAITING_CONFIRMATION: "À valider",
     COPYING_BACK: "Renvoi…", REPLACING: "Remplacement…", DONE: "Terminé",
     REJECTED: "Rejeté", CANCELLED: "Annulé", FAILED: "Échec",
   })[s] || s;
 }
 async function jobAction(id, act) {
   try {
+    if (act === "forcestop") {
+      if (!confirm("Forcer l'arrêt de cet encodage ? La progression en cours sera perdue.")) return;
+      await api(`/api/jobs/${id}/cancel`, { method: "POST" });
+      toast("Encodage arrêté");
+      fetchJobs();
+      return;
+    }
     await api(`/api/jobs/${id}/${act}`, { method: "POST" });
     if (act === "confirm") toast("Fichier remplacé");
     if (act === "reject") toast("Job rejeté");
+    if (act === "pause") toast("Encodage en pause");
+    if (act === "resume") toast("Encodage repris");
     fetchJobs();
   } catch (e) { toast(e.message, true); }
 }

@@ -312,3 +312,10 @@ def test_ffmpeg_update_refused_while_encoding(client, monkeypatch):
     monkeypatch.setattr(state.job_manager, "has_active", lambda: True)
     r = c.post("/api/ffmpeg/update")
     assert r.status_code == 409
+
+
+def test_pause_resume_invalid_state_returns_409(client):
+    c, _ = client
+    # Unknown / non-encoding job cannot be paused or resumed.
+    assert c.post("/api/jobs/999999/pause").status_code == 409
+    assert c.post("/api/jobs/999999/resume").status_code == 409

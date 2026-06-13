@@ -26,6 +26,7 @@ from ..core.models import Job, MediaFile, ProbeResult
 from ..encode.ffmpeg_cmd import build_encode_command
 from ..encode.profiles import params_for, resolve_encode_params
 from ..encode.runner import EncodeProgress, EncodeRunner
+from ..encode.suspend import resume_process, suspend_process
 from ..encode.validate import validate_output
 from ..storage.repo_jobs import JobsRepo
 from ..storage.repo_scan import ScanRepo
@@ -74,6 +75,7 @@ class JobManager:
         # job_id -> running task / per-job cancel flag / last broadcast progress
         self._active: dict[int, asyncio.Task] = {}
         self._cancel_events: dict[int, threading.Event] = {}
+        self._pids: dict[int, int] = {}  # job_id -> ffmpeg pid (for pause/resume)
         self._last_progress: dict[int, float] = {}
         self._last_progress_t: dict[int, float] = {}
 
@@ -202,11 +204,37 @@ class JobManager:
             return
         ev = self._cancel_events.get(job_id)
         if ev is not None:
+            # If suspended, resume first so the worker can observe the cancel and
+            # terminate ffmpeg (a frozen process emits no progress to react on).
+            if job.state is JobState.PAUSED:
+                pid = self._pids.get(job_id)
+                if pid is not None:
+                    resume_process(pid)
             ev.set()  # active job: copy/encode aborts -> finalised CANCELLED by the worker
             return
         if job.state in (JobState.QUEUED, JobState.AWAITING_CONFIRMATION):
             self._cleanup_workdir(job)
             self._set_state(job_id, JobState.CANCELLED, finished_at=self._now())
+
+    def pause(self, job_id: int) -> None:
+        """Suspend a running encode (freezes the ffmpeg process)."""
+        job = self._jobs.get(job_id)
+        if job is None or job.state is not JobState.ENCODING:
+            raise ValueError("seul un encodage en cours peut être mis en pause")
+        pid = self._pids.get(job_id)
+        if pid is None or not suspend_process(pid):
+            raise ValueError("impossible de mettre l'encodage en pause")
+        self._set_state(job_id, JobState.PAUSED)
+
+    def resume(self, job_id: int) -> None:
+        """Resume a paused encode."""
+        job = self._jobs.get(job_id)
+        if job is None or job.state is not JobState.PAUSED:
+            raise ValueError("ce job n'est pas en pause")
+        pid = self._pids.get(job_id)
+        if pid is None or not resume_process(pid):
+            raise ValueError("impossible de reprendre l'encodage")
+        self._set_state(job_id, JobState.ENCODING)
 
     # --- dispatcher -----------------------------------------------------
     async def _run_dispatcher(self) -> None:
@@ -241,6 +269,7 @@ class JobManager:
         def cb(_task: asyncio.Task) -> None:
             self._active.pop(job_id, None)
             self._cancel_events.pop(job_id, None)
+            self._pids.pop(job_id, None)
             self._last_progress.pop(job_id, None)
             self._last_progress_t.pop(job_id, None)
             self._wake.set()
@@ -327,9 +356,12 @@ class JobManager:
                 duration_s=src_probe.duration_s,
                 on_progress=lambda p: self._on_progress(job.id, p),  # type: ignore[arg-type]
                 cancel_event=cancel_event,
+                on_spawn=lambda pid: self._pids.__setitem__(job.id, pid),
             )
         except FileNotFoundError as exc:
             raise EncodeError(f"ffmpeg not found ({self._ffmpeg}): {exc}") from exc
+        finally:
+            self._pids.pop(job.id, None)  # pid is stale once the encode returns
         if result.cancelled:
             self._cleanup_workdir(job)
             self._set_state(job.id, JobState.CANCELLED, finished_at=self._now())

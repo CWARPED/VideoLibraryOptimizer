@@ -46,7 +46,9 @@ class FakeRunner:
         self.out_bytes = out_bytes
         self.cancelled = cancelled
 
-    async def run(self, args, *, duration_s, on_progress=None, cancel_event=None):
+    async def run(self, args, *, duration_s, on_progress=None, cancel_event=None, on_spawn=None):
+        if on_spawn:
+            on_spawn(999999)  # fake ffmpeg pid
         out_path = Path(args[-1])
         if self.cancelled:
             if cancel_event is not None:
@@ -130,7 +132,7 @@ class GatedRunner:
         self.concurrent = 0
         self.max_concurrent = 0
 
-    async def run(self, args, *, duration_s, on_progress=None, cancel_event=None):
+    async def run(self, args, *, duration_s, on_progress=None, cancel_event=None, on_spawn=None):
         self.concurrent += 1
         self.max_concurrent = max(self.max_concurrent, self.concurrent)
         out = Path(args[-1])
@@ -349,3 +351,41 @@ def test_copy_into_completes_without_cancel(tmp_path):
     src.write_bytes(b"hello world" * 1000)
     out = pipeline.copy_into(src, tmp_path / "work")
     assert out.read_bytes() == src.read_bytes()
+
+
+@pytest.mark.asyncio
+async def test_pause_resume_state_transitions(tmp_path, db, monkeypatch):
+    """pause() suspends + marks PAUSED; resume() resumes + marks ENCODING."""
+    from vlo.jobs import manager as mgr_mod
+
+    calls = []
+    monkeypatch.setattr(mgr_mod, "suspend_process", lambda pid: calls.append(("suspend", pid)) or True)
+    monkeypatch.setattr(mgr_mod, "resume_process", lambda pid: calls.append(("resume", pid)) or True)
+
+    mgr, jobs_repo, scan_repo = _build(tmp_path, db, FakeRunner())
+    src = _make_source(tmp_path)
+    mf = _persist_media(scan_repo, src)
+    batch = mgr.enqueue([mf], Codec.X265, "Light")
+    jid = jobs_repo.list(batch_id=batch)[0].id
+
+    # Simulate an in-flight encode with a known ffmpeg pid.
+    jobs_repo.update(jid, state=JobState.ENCODING.value)
+    mgr._pids[jid] = 4242
+
+    mgr.pause(jid)
+    assert jobs_repo.get(jid).state is JobState.PAUSED
+    assert ("suspend", 4242) in calls
+
+    mgr.resume(jid)
+    assert jobs_repo.get(jid).state is JobState.ENCODING
+    assert ("resume", 4242) in calls
+
+
+@pytest.mark.asyncio
+async def test_pause_rejects_non_encoding_job(tmp_path, db):
+    mgr, jobs_repo, scan_repo = _build(tmp_path, db, FakeRunner())
+    mf = _persist_media(scan_repo, _make_source(tmp_path))
+    batch = mgr.enqueue([mf], Codec.X265, "Light")
+    jid = jobs_repo.list(batch_id=batch)[0].id  # still QUEUED
+    with pytest.raises(ValueError):
+        mgr.pause(jid)

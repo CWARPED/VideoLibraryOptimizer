@@ -56,15 +56,18 @@ class EncodeRunner:
         duration_s: float,
         on_progress: Callable[[EncodeProgress], None] | None = None,
         cancel_event: threading.Event | None = None,
+        on_spawn: Callable[[int], None] | None = None,
     ) -> EncodeResult:
         """Run ffmpeg in a worker thread. Raises EncodeError on failure.
 
         Cancellation: if ``cancel_event`` (a threading.Event) is set, the
         process is terminated and EncodeResult(cancelled=True) is returned.
+        ``on_spawn`` is called with the ffmpeg pid right after launch (so the
+        caller can suspend/resume it for pause/resume).
         """
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            None, self._run_blocking, args, duration_s, on_progress, cancel_event, loop
+            None, self._run_blocking, args, duration_s, on_progress, cancel_event, loop, on_spawn
         )
 
     def _run_blocking(
@@ -74,6 +77,7 @@ class EncodeRunner:
         on_progress: Callable[[EncodeProgress], None] | None,
         cancel_event: threading.Event | None,
         loop: asyncio.AbstractEventLoop,
+        on_spawn: Callable[[int], None] | None = None,
     ) -> EncodeResult:
         proc = subprocess.Popen(
             args,
@@ -86,6 +90,8 @@ class EncodeRunner:
         )
         # Ensure ffmpeg dies with us (no orphan surviving a --reload/crash).
         job_handle = bind_process_lifetime(proc.pid)
+        if on_spawn is not None:
+            on_spawn(proc.pid)
 
         stderr_lines: list[str] = []
 

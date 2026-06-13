@@ -100,6 +100,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 .progress { height: 10px; border-radius: 5px; background: var(--panel-2); overflow: hidden; }
 .progress > span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent-2), var(--accent)); transition: width .3s; }
+.progress.paused > span { background: linear-gradient(90deg, var(--warn), var(--warn)); opacity: .7; }
+.state.PAUSED { background: rgba(240,180,41,.2); color: var(--warn); }
 
 .selbar {
   position: sticky; bottom: 0; display: flex; align-items: center; gap: 14px;
