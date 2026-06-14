@@ -236,6 +236,39 @@ class JobManager:
             raise ValueError("impossible de reprendre l'encodage")
         self._set_state(job_id, JobState.ENCODING)
 
+    # --- global controls (act on every matching job at once) ------------
+    def pause_all(self) -> int:
+        """Pause every currently-encoding job. Returns how many were paused."""
+        n = 0
+        for job in self._jobs.list(state=JobState.ENCODING):
+            try:
+                self.pause(job.id)
+                n += 1
+            except ValueError:
+                pass
+        return n
+
+    def resume_all(self) -> int:
+        """Resume every paused job. Returns how many were resumed."""
+        n = 0
+        for job in self._jobs.list(state=JobState.PAUSED):
+            try:
+                self.resume(job.id)
+                n += 1
+            except ValueError:
+                pass
+        return n
+
+    def cancel_all(self) -> int:
+        """Cancel every queued/active/paused job (force-stop all). Returns the count."""
+        stoppable = {
+            JobState.QUEUED, JobState.COPYING_IN, JobState.ENCODING, JobState.PAUSED,
+        }
+        ids = [j.id for j in self._jobs.list() if j.state in stoppable]
+        for jid in ids:
+            self.cancel(jid)
+        return len(ids)
+
     # --- dispatcher -----------------------------------------------------
     async def _run_dispatcher(self) -> None:
         while not self._stopping:

@@ -615,18 +615,38 @@ async function encodeSeriesSelection() {
 
 // ---------- QUEUE ----------
 const TERMINAL_STATES = ["DONE", "REJECTED", "CANCELLED", "FAILED"];
+const STOPPABLE_STATES = ["QUEUED", "COPYING_IN", "ENCODING", "PAUSED"];
 function renderQueue() {
   const jobs = [...state.jobs].reverse();
   const nTerminal = jobs.filter(j => TERMINAL_STATES.includes(j.state)).length;
+  const nEncoding = jobs.filter(j => j.state === "ENCODING").length;
+  const nPaused = jobs.filter(j => j.state === "PAUSED").length;
+  const nStoppable = jobs.filter(j => STOPPABLE_STATES.includes(j.state)).length;
   const header = `
     <div class="row" style="justify-content:space-between;margin-bottom:14px">
       <h2 style="margin:0">File d'attente</h2>
-      <button class="btn ghost sm" id="q-clear" ${nTerminal === 0 ? "disabled" : ""}>
-        Nettoyer la file (${nTerminal} terminé${nTerminal > 1 ? "s" : ""})</button>
+      <div class="row">
+        <button class="btn ghost sm" id="q-pause-all" ${nEncoding === 0 ? "disabled" : ""}>⏸ Tout mettre en pause</button>
+        <button class="btn good sm" id="q-resume-all" ${nPaused === 0 ? "disabled" : ""}>▶ Tout reprendre</button>
+        <button class="btn bad sm" id="q-stop-all" ${nStoppable === 0 ? "disabled" : ""}>⏹ Tout arrêter</button>
+        <button class="btn ghost sm" id="q-clear" ${nTerminal === 0 ? "disabled" : ""}>
+          Nettoyer (${nTerminal})</button>
+      </div>
     </div>`;
   if (jobs.length === 0) { app.innerHTML = header + `<div class="empty">Aucun job.</div>`; return; }
   app.innerHTML = header + jobs.map(jobCard).join("");
 
+  const onClick = (id, fn) => { const b = document.getElementById(id); if (b) b.addEventListener("click", fn); };
+  const bulk = async (url, msg) => {
+    try { await api(url, { method: "POST" }); toast(msg); fetchJobs(); }
+    catch (e) { toast(e.message, true); }
+  };
+  onClick("q-pause-all", () => bulk("/api/jobs/pause-all", "Encodages mis en pause"));
+  onClick("q-resume-all", () => bulk("/api/jobs/resume-all", "Encodages repris"));
+  onClick("q-stop-all", () => {
+    if (!confirm(`Arrêter ${nStoppable} job(s) en cours/en attente ? La progression sera perdue.`)) return;
+    bulk("/api/jobs/stop-all", "Tous les jobs arrêtés");
+  });
   const clearBtn = document.getElementById("q-clear");
   if (clearBtn) clearBtn.addEventListener("click", async () => {
     try {

@@ -389,3 +389,32 @@ async def test_pause_rejects_non_encoding_job(tmp_path, db):
     jid = jobs_repo.list(batch_id=batch)[0].id  # still QUEUED
     with pytest.raises(ValueError):
         mgr.pause(jid)
+
+
+@pytest.mark.asyncio
+async def test_pause_all_and_resume_all(tmp_path, db, monkeypatch):
+    from vlo.jobs import manager as mgr_mod
+    monkeypatch.setattr(mgr_mod, "suspend_process", lambda pid: True)
+    monkeypatch.setattr(mgr_mod, "resume_process", lambda pid: True)
+
+    mgr, jobs_repo, scan_repo = _build(tmp_path, db, FakeRunner())
+    media = [_persist_media(scan_repo, _make_source(tmp_path, name=f"F{i}.mkv")) for i in range(3)]
+    batch = mgr.enqueue(media, Codec.X265, "Light")
+    ids = [j.id for j in jobs_repo.list(batch_id=batch)]
+    for jid in ids:  # simulate in-flight encodes
+        jobs_repo.update(jid, state=JobState.ENCODING.value)
+        mgr._pids[jid] = 1000 + jid
+
+    assert mgr.pause_all() == 3
+    assert all(jobs_repo.get(jid).state is JobState.PAUSED for jid in ids)
+    assert mgr.resume_all() == 3
+    assert all(jobs_repo.get(jid).state is JobState.ENCODING for jid in ids)
+
+
+@pytest.mark.asyncio
+async def test_cancel_all_stops_queued(tmp_path, db):
+    mgr, jobs_repo, scan_repo = _build(tmp_path, db, FakeRunner())  # dispatcher not started
+    media = [_persist_media(scan_repo, _make_source(tmp_path, name=f"Q{i}.mkv")) for i in range(2)]
+    mgr.enqueue(media, Codec.X265, "Light")
+    assert mgr.cancel_all() == 2
+    assert all(j.state is JobState.CANCELLED for j in jobs_repo.list())

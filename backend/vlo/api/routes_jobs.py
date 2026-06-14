@@ -68,6 +68,24 @@ async def get_job(job_id: int, request: Request):
     return job_to_dict(job)
 
 
+@router.post("/jobs/pause-all")
+async def pause_all_jobs(request: Request):
+    """Pause every currently-encoding job."""
+    return {"ok": True, "paused": get_state(request).job_manager.pause_all()}
+
+
+@router.post("/jobs/resume-all")
+async def resume_all_jobs(request: Request):
+    """Resume every paused job."""
+    return {"ok": True, "resumed": get_state(request).job_manager.resume_all()}
+
+
+@router.post("/jobs/stop-all")
+async def stop_all_jobs(request: Request):
+    """Force-stop every queued/active/paused job."""
+    return {"ok": True, "stopped": get_state(request).job_manager.cancel_all()}
+
+
 @router.post("/jobs/{job_id}/confirm")
 async def confirm_job(job_id: int, request: Request):
     state = get_state(request)

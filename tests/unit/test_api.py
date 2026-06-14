@@ -319,3 +319,10 @@ def test_pause_resume_invalid_state_returns_409(client):
     # Unknown / non-encoding job cannot be paused or resumed.
     assert c.post("/api/jobs/999999/pause").status_code == 409
     assert c.post("/api/jobs/999999/resume").status_code == 409
+
+
+def test_global_job_controls_smoke(client):
+    c, _ = client
+    assert c.post("/api/jobs/pause-all").json() == {"ok": True, "paused": 0}
+    assert c.post("/api/jobs/resume-all").json() == {"ok": True, "resumed": 0}
+    assert c.post("/api/jobs/stop-all").json() == {"ok": True, "stopped": 0}
