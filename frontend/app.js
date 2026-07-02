@@ -230,9 +230,9 @@ function encodeControls() {
       <span>Codec</span>
       <select id="sel-codec">
         <option value="X265" ${state.codec === "X265" && !state.eight_bit ? "selected" : ""}>HEVC x265 10-bit</option>
-        <option value="X265-8" ${state.codec === "X265" && state.eight_bit ? "selected" : ""}>HEVC x265 8-bit — + compatible</option>
+        <option value="X265-8" ${state.codec === "X265" && state.eight_bit ? "selected" : ""}>HEVC x265 8-bit</option>
         <option value="SVTAV1" ${state.codec === "SVTAV1" && !state.eight_bit ? "selected" : ""}>AV1 (SVT) 10-bit</option>
-        <option value="SVTAV1-8" ${state.codec === "SVTAV1" && state.eight_bit ? "selected" : ""}>AV1 (SVT) 8-bit — + compatible</option>
+        <option value="SVTAV1-8" ${state.codec === "SVTAV1" && state.eight_bit ? "selected" : ""}>AV1 (SVT) 8-bit</option>
       </select>
     </label>
     <label class="field" style="margin:0">
