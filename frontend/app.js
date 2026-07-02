@@ -56,6 +56,15 @@ const state = {
   movieSort: { key: "score", dir: "desc" },
   seriesSort: { key: "est_gain_bytes", dir: "desc" },
   scans: {}, // scan_id -> {scan_id, root, running, done, total, probed, cached, errors, current_path}
+  // Library map (treemap) view
+  mapFiles: [],                                   // flat /api/files payload
+  mapScans: [],                                   // persisted scan roots from /api/scans
+  mapHidden: { scans: new Set(), cats: new Set() },
+  mapFocus: null,                                 // node path of the drilled-into folder
+  mapSel: null,                                   // selected file (dict) for the detail panel
+  mapPanelCollapsed: false,
+  mapZoom: { scale: 1, tx: 0, ty: 0 },
+  mapLoaded: false,
   codec: "X265",
   eight_bit: false,
   profile: "Light",
@@ -92,6 +101,8 @@ function handleWS(m) {
     case "scan_done":
       if (state.scans[m.scan_id]) state.scans[m.scan_id].running = false;
       if (state.view === "scan") { renderScanProgress(); loadExcluded(); }
+      state.mapLoaded = false; // the map refetches on next visit
+      if (state.view === "map") renderMap();
       reloadLibrary();
       toast(`Scan terminé — ${m.root || ""}`);
       break;
@@ -211,6 +222,7 @@ function render() {
   if (state.view === "scan") return renderScan();
   if (state.view === "movies") return renderMovies();
   if (state.view === "series") return renderSeries();
+  if (state.view === "map") return renderMap();
   if (state.view === "queue") return renderQueue();
   if (state.view === "logs") return renderLogs();
   if (state.view === "settings") return renderSettings();
@@ -672,6 +684,512 @@ async function encodeSeriesSelection() {
     fetchJobs();
     renderSeriesDetail();
   } catch (e) { toast(e.message, true); }
+}
+
+// ---------- MAP (treemap type WinDirStat) ----------
+const MAP_CATS = [
+  { key: "candidate", label: "Candidats", swatch: "score" },
+  { key: "efficient", label: "Déjà efficaces", swatch: "#3d4356" },
+  { key: "excluded", label: "Exclus", swatch: "#2e3342" },
+  { key: "reencoded", label: "Réencodés", swatch: "#1f4636" },
+];
+const MAP_OTHER_ROOT = "Autres";
+
+let mapTree = null;      // built forest (root node)
+let mapLayout = null;    // {leaves:[{x,y,w,h,f}], dirs:[{x,y,w,h,node}]}
+let mapResizeObs = null;
+
+async function loadMapData() {
+  const [f, s] = await Promise.all([api(`/api/files?${cp()}`), api("/api/scans")]);
+  state.mapFiles = f.files;
+  state.mapScans = s.scans;
+  state.mapLoaded = true;
+}
+
+// --- tree construction (respects the scan/category filters) --------------
+function mapChild(node, name) {
+  let c = node.dirs.get(name);
+  if (!c) {
+    c = { name, id: node.id + "/" + name, dirs: new Map(), leaves: [], size: 0, gain: 0 };
+    node.dirs.set(name, c);
+  }
+  return c;
+}
+function mapSumNode(node) {
+  let size = 0, gain = 0;
+  for (const d of node.dirs.values()) { mapSumNode(d); size += d.size; gain += d.gain; }
+  for (const l of node.leaves) { size += l.size; gain += l.gain; }
+  node.size = size; node.gain = gain;
+}
+function mapBuildTree() {
+  const hidden = state.mapHidden;
+  const root = { name: "Bibliothèque", id: "", dirs: new Map(), leaves: [], size: 0, gain: 0 };
+  for (const f of state.mapFiles) {
+    const rootLabel = f.root || MAP_OTHER_ROOT;
+    if (hidden.scans.has(rootLabel) || hidden.cats.has(f.category)) continue;
+    if (!f.size_bytes) continue;
+    let rel = f.path;
+    if (f.root && f.path.toLowerCase().startsWith(f.root.toLowerCase())) {
+      rel = f.path.slice(f.root.length);
+    }
+    const segs = rel.split(/[\\/]+/).filter(Boolean);
+    let node = mapChild(root, rootLabel);
+    for (let i = 0; i < segs.length - 1; i++) node = mapChild(node, segs[i]);
+    const name = segs.length ? segs[segs.length - 1] : f.filename;
+    node.leaves.push({
+      name, id: node.id + "/" + name, file: f,
+      size: f.size_bytes,
+      gain: f.category === "candidate" ? (f.est_gain_bytes || 0) : 0,
+    });
+  }
+  mapSumNode(root);
+  return root;
+}
+function mapFindNode(node, id) {
+  if (node.id === id) return node;
+  for (const d of node.dirs.values()) {
+    if (id === d.id || id.startsWith(d.id + "/")) return mapFindNode(d, id);
+  }
+  return null;
+}
+
+// --- squarified treemap layout -------------------------------------------
+function squarifyLayout(items, rect) {
+  const total = items.reduce((s, n) => s + n.size, 0);
+  items.forEach(n => { n._rect = null; });
+  if (total <= 0 || rect.w <= 1 || rect.h <= 1) return;
+  const scale = (rect.w * rect.h) / total;
+  const sorted = items.slice().sort((a, b) => b.size - a.size);
+  let x = rect.x, y = rect.y, w = rect.w, h = rect.h;
+
+  const worst = (areas, len) => {
+    const sum = areas.reduce((a, b) => a + b, 0);
+    const s2 = sum * sum, l2 = len * len;
+    return Math.max((l2 * areas[0]) / s2, s2 / (l2 * areas[areas.length - 1]));
+  };
+
+  let i = 0;
+  while (i < sorted.length) {
+    const len = Math.min(w, h);
+    const row = [sorted[i]];
+    let areas = [sorted[i].size * scale];
+    i++;
+    while (i < sorted.length) {
+      const trial = [...areas, sorted[i].size * scale];  // sorted desc already
+      if (worst(trial, len) > worst(areas, len)) break;
+      row.push(sorted[i]); areas = trial; i++;
+    }
+    const rowArea = areas.reduce((a, b) => a + b, 0);
+    const thickness = rowArea / len;
+    let off = 0;
+    for (let k = 0; k < row.length; k++) {
+      const l = areas[k] / thickness;
+      row[k]._rect = w >= h
+        ? { x, y: y + off, w: thickness, h: l }
+        : { x: x + off, y, w: l, h: thickness };
+      off += l;
+    }
+    if (w >= h) { x += thickness; w -= thickness; }
+    else { y += thickness; h -= thickness; }
+  }
+}
+
+function mapComputeLayout(focusNode, W, H) {
+  const leaves = [], dirs = [];
+  function place(node, rect, depth) {
+    const items = [...node.dirs.values(), ...node.leaves].filter(n => n.size > 0);
+    squarifyLayout(items, rect);
+    for (const it of items) {
+      const r = it._rect;
+      if (!r || r.w < 1 || r.h < 1) continue;
+      if (it.file) { leaves.push({ ...r, f: it.file, name: it.name, gain: it.gain, size: it.size }); continue; }
+      dirs.push({ ...r, node: it, depth });
+      const header = r.w > 80 && r.h > 44 ? 15 : 2;
+      const inner = { x: r.x + 2, y: r.y + header, w: r.w - 4, h: r.h - header - 2 };
+      if (inner.w > 3 && inner.h > 3) place(it, inner, depth + 1);
+    }
+  }
+  place(focusNode, { x: 0, y: 0, w: W, h: H }, 0);
+  return { leaves, dirs };
+}
+
+// --- colors ----------------------------------------------------------------
+function scoreColor(score) {
+  const s = Math.max(0, Math.min(100, score || 0)) / 100;
+  const c1 = [62, 207, 142], c2 = [240, 180, 41], c3 = [240, 85, 109]; // good -> warn -> bad
+  const [a, b, t] = s < 0.5 ? [c1, c2, s * 2] : [c2, c3, (s - 0.5) * 2];
+  const lerp = (u, v) => Math.round(u + (v - u) * t);
+  return `rgb(${lerp(a[0], b[0])},${lerp(a[1], b[1])},${lerp(a[2], b[2])})`;
+}
+function mapFileColor(f) {
+  if (f.category === "candidate") return scoreColor(f.score);
+  if (f.category === "reencoded") return "#1f4636";
+  if (f.category === "efficient") return "#3d4356";
+  return "#2e3342"; // excluded
+}
+
+// --- drawing ----------------------------------------------------------------
+function mapCanvas() { return document.getElementById("map-canvas"); }
+
+function mapDraw() {
+  const cv = mapCanvas();
+  if (!cv || !mapLayout) return;
+  const ctx = cv.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const z = state.mapZoom;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = "#0c0e14";
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.setTransform(dpr * z.scale, 0, 0, dpr * z.scale, dpr * z.tx, dpr * z.ty);
+  const px = 1 / z.scale; // 1 screen pixel in world units
+
+  // Leaves first, then folder borders/titles on top.
+  for (const l of mapLayout.leaves) {
+    ctx.fillStyle = mapFileColor(l.f);
+    ctx.fillRect(l.x, l.y, l.w, l.h);
+    ctx.strokeStyle = "rgba(0,0,0,.55)";
+    ctx.lineWidth = px;
+    ctx.strokeRect(l.x, l.y, l.w, l.h);
+    if (state.mapSel && state.mapSel.id === l.f.id) {
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 2 * px;
+      ctx.strokeRect(l.x + px, l.y + px, l.w - 2 * px, l.h - 2 * px);
+    }
+    // Inner stroke rectangle: area proportional to the estimated gain.
+    if (l.gain > 0 && l.size > 0) {
+      const k = Math.sqrt(Math.min(1, l.gain / l.size));
+      const gw = l.w * k, gh = l.h * k;
+      if (gw * z.scale > 5 && gh * z.scale > 5) {
+        ctx.strokeStyle = "rgba(255,255,255,.75)";
+        ctx.lineWidth = px;
+        ctx.strokeRect(l.x + (l.w - gw) / 2, l.y + (l.h - gh) / 2, gw, gh);
+      }
+    }
+    // Label if there is enough on-screen room.
+    const sw = l.w * z.scale, sh = l.h * z.scale;
+    if (sw > 72 && sh > 30) {
+      const fs = 11 / z.scale;
+      ctx.save();
+      ctx.beginPath(); ctx.rect(l.x, l.y, l.w, l.h); ctx.clip();
+      ctx.font = `${fs}px system-ui, sans-serif`;
+      ctx.fillStyle = "rgba(0,0,0,.8)";
+      ctx.fillText(l.name, l.x + 4 * px, l.y + 13 * px);
+      if (l.gain > 0 && sh > 44) ctx.fillText(`−${fmtBytes(l.gain)}`, l.x + 4 * px, l.y + 26 * px);
+      ctx.restore();
+    }
+  }
+  for (const d of mapLayout.dirs) {
+    ctx.strokeStyle = "rgba(139,147,167,.7)";
+    ctx.lineWidth = Math.max(px, (d.depth === 0 ? 2 : 1) * px);
+    ctx.strokeRect(d.x, d.y, d.w, d.h);
+    if (d.w > 80 && d.h > 44) { // matches the header band reserved in the layout
+      ctx.save();
+      ctx.beginPath(); ctx.rect(d.x, d.y, d.w, 15); ctx.clip();
+      ctx.font = "bold 11px system-ui, sans-serif";
+      ctx.fillStyle = "#aeb6c8";
+      ctx.fillText(`${d.node.name} — ${fmtBytes(d.node.size)}`, d.x + 4, d.y + 11);
+      ctx.restore();
+    }
+  }
+}
+
+function mapRebuild() {
+  const cv = mapCanvas();
+  if (!cv) return;
+  mapTree = mapBuildTree();
+  let focus = state.mapFocus ? mapFindNode(mapTree, state.mapFocus) : null;
+  if (!focus || focus.size <= 0) { focus = mapTree; state.mapFocus = null; }
+  const wrap = cv.parentElement;
+  const dpr = window.devicePixelRatio || 1;
+  const W = Math.max(50, wrap.clientWidth), H = Math.max(50, wrap.clientHeight);
+  cv.width = Math.round(W * dpr);
+  cv.height = Math.round(H * dpr);
+  cv.style.width = W + "px";
+  cv.style.height = H + "px";
+  mapLayout = focus.size > 0 ? mapComputeLayout(focus, W, H) : { leaves: [], dirs: [] };
+  mapDraw();
+  mapRenderBreadcrumb();
+}
+
+// --- interactions ------------------------------------------------------------
+function mapToWorld(ev) {
+  const cv = mapCanvas();
+  const r = cv.getBoundingClientRect();
+  const z = state.mapZoom;
+  return {
+    x: (ev.clientX - r.left - z.tx) / z.scale,
+    y: (ev.clientY - r.top - z.ty) / z.scale,
+  };
+}
+function mapHitLeaf(p) {
+  if (!mapLayout) return null;
+  for (let i = mapLayout.leaves.length - 1; i >= 0; i--) {
+    const l = mapLayout.leaves[i];
+    if (p.x >= l.x && p.x <= l.x + l.w && p.y >= l.y && p.y <= l.y + l.h) return l;
+  }
+  return null;
+}
+function mapHitDir(p) {
+  if (!mapLayout) return null;
+  let best = null;
+  for (const d of mapLayout.dirs) {
+    if (p.x >= d.x && p.x <= d.x + d.w && p.y >= d.y && p.y <= d.y + d.h) {
+      if (!best || d.depth > best.depth) best = d;
+    }
+  }
+  return best;
+}
+function mapResetZoom() { state.mapZoom = { scale: 1, tx: 0, ty: 0 }; mapDraw(); }
+
+// Pan state shared with the window-level listeners (bound once, the canvas
+// is recreated on every renderMap while window listeners persist).
+const mapPan = { dragging: false, moved: false, lastX: 0, lastY: 0, bound: false };
+
+function mapBindCanvas() {
+  const cv = mapCanvas();
+  if (!cv) return;
+
+  cv.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+    const z = state.mapZoom;
+    const factor = Math.pow(1.0015, -ev.deltaY);
+    const ns = Math.min(60, Math.max(1, z.scale * factor));
+    const r = cv.getBoundingClientRect();
+    const mx = ev.clientX - r.left, my = ev.clientY - r.top;
+    const k = ns / z.scale;
+    z.tx = mx - (mx - z.tx) * k;
+    z.ty = my - (my - z.ty) * k;
+    z.scale = ns;
+    if (ns === 1) { z.tx = 0; z.ty = 0; }
+    mapDraw();
+  }, { passive: false });
+
+  cv.addEventListener("mousedown", (ev) => {
+    mapPan.dragging = true; mapPan.moved = false;
+    mapPan.lastX = ev.clientX; mapPan.lastY = ev.clientY;
+  });
+  if (!mapPan.bound) {
+    mapPan.bound = true;
+    window.addEventListener("mousemove", (ev) => {
+      if (!mapPan.dragging) return;
+      const dx = ev.clientX - mapPan.lastX, dy = ev.clientY - mapPan.lastY;
+      if (Math.abs(dx) + Math.abs(dy) > 3) mapPan.moved = true;
+      if (mapPan.moved) {
+        state.mapZoom.tx += dx; state.mapZoom.ty += dy;
+        mapPan.lastX = ev.clientX; mapPan.lastY = ev.clientY;
+        mapDraw();
+      }
+    });
+    window.addEventListener("mouseup", () => { mapPan.dragging = false; });
+  }
+
+  cv.addEventListener("click", (ev) => {
+    if (mapPan.moved) return; // it was a pan
+    const leaf = mapHitLeaf(mapToWorld(ev));
+    state.mapSel = leaf ? leaf.f : null;
+    mapRenderDetail();
+    mapDraw();
+  });
+  cv.addEventListener("dblclick", (ev) => {
+    ev.preventDefault();
+    const p = mapToWorld(ev);
+    const dir = mapHitDir(p);
+    if (dir) {
+      state.mapFocus = dir.node.id;
+    } else if (state.mapFocus) {
+      // Double-click outside any folder -> go up one level.
+      const parts = state.mapFocus.split("/");
+      parts.pop();
+      state.mapFocus = parts.length > 1 ? parts.join("/") : null;
+    }
+    mapResetZoom();
+    mapRebuild();
+  });
+
+  cv.addEventListener("mousemove", (ev) => {
+    const leaf = mapHitLeaf(mapToWorld(ev));
+    cv.title = leaf
+      ? `${leaf.f.path}\n${fmtBytes(leaf.f.size_bytes)}${leaf.gain ? ` · gain estimé ${fmtBytes(leaf.gain)}` : ""}`
+      : "";
+    cv.style.cursor = leaf ? "pointer" : "default";
+  });
+}
+
+// --- UI pieces ---------------------------------------------------------------
+function mapRenderBreadcrumb() {
+  const el = document.getElementById("map-crumb");
+  if (!el) return;
+  const parts = (state.mapFocus || "").split("/").filter(Boolean);
+  let acc = "";
+  const items = [`<a href="#" data-crumb="">Bibliothèque</a>`];
+  for (const p of parts) {
+    acc += "/" + p;
+    items.push(`<a href="#" data-crumb="${esc(acc)}">${esc(p)}</a>`);
+  }
+  el.innerHTML = items.join(`<span class="muted"> › </span>`);
+  el.querySelectorAll("[data-crumb]").forEach(a => a.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    state.mapFocus = a.dataset.crumb || null;
+    mapResetZoom();
+    mapRebuild();
+  }));
+}
+
+function mapRenderDetail() {
+  const el = document.getElementById("map-detail-body");
+  const aside = document.getElementById("map-detail");
+  if (!el || !aside) return;
+  aside.classList.toggle("collapsed", state.mapPanelCollapsed);
+  if (state.mapPanelCollapsed) return;
+  const f = state.mapSel;
+  if (!f) { el.innerHTML = `<div class="empty">Clique sur un fichier de la carte pour voir ses détails.</div>`; return; }
+  const catLabel = (MAP_CATS.find(c => c.key === f.category) || {}).label || f.category;
+  const row = (k, v) => `<div class="map-kv"><span>${k}</span><strong>${v}</strong></div>`;
+  el.innerHTML = `
+    <div class="map-file-title">${esc(f.filename)}</div>
+    <div class="muted" style="word-break:break-all;margin-bottom:10px">${esc(f.path)}</div>
+    ${row("Catégorie", esc(catLabel))}
+    ${f.excluded_reason ? row("Raison", esc(f.excluded_reason)) : ""}
+    ${row("Taille", fmtBytes(f.size_bytes))}
+    ${f.category === "candidate" ? row("Sortie estimée", fmtBytes(f.est_out_bytes)) : ""}
+    ${f.category === "candidate" ? row("Gain estimé", `<span style="color:var(--good)">−${fmtBytes(f.est_gain_bytes)}</span>`) : ""}
+    ${row("Score", f.score != null ? f.score.toFixed(0) : "—")}
+    ${row("Surdébit", f.overhead_ratio ? f.overhead_ratio.toFixed(1) + "×" : "—")}
+    ${row("Codec", esc(f.vcodec || "—"))}
+    ${row("Résolution", fmtRes(f.width, f.height))}
+    ${row("Durée", fmtDur(f.duration_s))}
+    ${f.is_hdr ? row("HDR", "oui") : ""}
+    ${f.root ? row("Scan", esc(f.root)) : ""}
+    ${f.category === "candidate" && f.id != null ? `
+      <button class="btn" id="map-encode" style="margin-top:12px;width:100%">
+        Encoder (${state.codec}${state.eight_bit ? " 8-bit" : ""} · ${esc(state.profile)})
+      </button>` : ""}`;
+  const btn = document.getElementById("map-encode");
+  if (btn) btn.addEventListener("click", async () => {
+    try {
+      await api("/api/jobs/batch", {
+        method: "POST",
+        body: JSON.stringify({
+          codec: state.codec, profile_name: state.profile,
+          eight_bit: state.eight_bit, file_ids: [f.id],
+        }),
+      });
+      toast("Ajouté à la file d'attente");
+      fetchJobs();
+    } catch (e) { toast(e.message, true); }
+  });
+}
+
+function mapRenderFilters() {
+  const el = document.getElementById("map-filters");
+  if (!el) return;
+  // Group visible stats by scan root.
+  const byRoot = new Map();
+  for (const f of state.mapFiles) {
+    const label = f.root || MAP_OTHER_ROOT;
+    const g = byRoot.get(label) || { n: 0, size: 0 };
+    g.n++; g.size += f.size_bytes || 0;
+    byRoot.set(label, g);
+  }
+  const roots = [...byRoot.keys()].sort((a, b) =>
+    a === MAP_OTHER_ROOT ? 1 : b === MAP_OTHER_ROOT ? -1 : a.localeCompare(b));
+  const scanRows = roots.map(rt => {
+    const g = byRoot.get(rt);
+    return `<label class="map-check">
+      <input type="checkbox" data-map-scan="${esc(rt)}" ${state.mapHidden.scans.has(rt) ? "" : "checked"}>
+      <span class="map-check-label" title="${esc(rt)}">${esc(rt)}</span>
+      <span class="muted">${g.n} · ${fmtBytes(g.size)}</span>
+    </label>`;
+  }).join("") || `<div class="muted">Aucun scan enregistré — lance un scan.</div>`;
+
+  const catRows = MAP_CATS.map(c => `<label class="map-check">
+      <input type="checkbox" data-map-cat="${c.key}" ${state.mapHidden.cats.has(c.key) ? "" : "checked"}>
+      <span class="map-swatch" style="background:${c.swatch === "score" ? "linear-gradient(90deg, #3ecf8e, #f0b429, #f0556d)" : c.swatch}"></span>
+      <span class="map-check-label">${c.label}</span>
+    </label>`).join("");
+
+  el.innerHTML = `
+    <h3 style="margin-top:0">Scans</h3>
+    ${scanRows}
+    <h3>Catégories</h3>
+    ${catRows}
+    <div class="muted" style="margin-top:12px;font-size:12px">
+      Aire = taille du fichier · couleur = score de priorité ·
+      rectangle blanc = gain de place estimé.
+    </div>`;
+
+  el.querySelectorAll("[data-map-scan]").forEach(cb => cb.addEventListener("change", () => {
+    const key = cb.dataset.mapScan;
+    if (cb.checked) state.mapHidden.scans.delete(key); else state.mapHidden.scans.add(key);
+    mapRebuild();
+  }));
+  el.querySelectorAll("[data-map-cat]").forEach(cb => cb.addEventListener("change", () => {
+    const key = cb.dataset.mapCat;
+    if (cb.checked) state.mapHidden.cats.delete(key); else state.mapHidden.cats.add(key);
+    mapRebuild();
+  }));
+}
+
+function renderMap() {
+  app.innerHTML = `
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <h2 style="margin:0">Carte de la bibliothèque</h2>
+      <button class="btn ghost sm" id="map-reload">↻ Recharger</button>
+    </div>
+    <div class="map-layout" id="map-layout">
+      <aside class="panel map-side" id="map-filters"></aside>
+      <div class="panel map-main">
+        <div class="map-toolbar">
+          <div id="map-crumb" class="map-crumb"></div>
+          <div class="spacer"></div>
+          <button class="btn ghost sm" id="map-zoom-out">−</button>
+          <button class="btn ghost sm" id="map-zoom-in">+</button>
+          <button class="btn ghost sm" id="map-zoom-reset">1:1</button>
+        </div>
+        <div class="map-canvas-wrap"><canvas id="map-canvas"></canvas></div>
+      </div>
+      <aside class="panel map-detail" id="map-detail">
+        <button class="map-collapse" id="map-collapse" title="Replier / déplier">${state.mapPanelCollapsed ? "«" : "»"}</button>
+        <div id="map-detail-body"></div>
+      </aside>
+    </div>`;
+
+  document.getElementById("map-reload").addEventListener("click", async () => {
+    state.mapLoaded = false;
+    renderMap();
+  });
+  document.getElementById("map-collapse").addEventListener("click", () => {
+    state.mapPanelCollapsed = !state.mapPanelCollapsed;
+    document.getElementById("map-collapse").textContent = state.mapPanelCollapsed ? "«" : "»";
+    mapRenderDetail();
+    // The canvas area changed width -> recompute the layout.
+    requestAnimationFrame(mapRebuild);
+  });
+  const zoomBtn = (id, f) => document.getElementById(id).addEventListener("click", f);
+  zoomBtn("map-zoom-in", () => { state.mapZoom.scale = Math.min(60, state.mapZoom.scale * 1.4); mapDraw(); });
+  zoomBtn("map-zoom-out", () => {
+    state.mapZoom.scale = Math.max(1, state.mapZoom.scale / 1.4);
+    if (state.mapZoom.scale === 1) { state.mapZoom.tx = 0; state.mapZoom.ty = 0; }
+    mapDraw();
+  });
+  zoomBtn("map-zoom-reset", mapResetZoom);
+
+  mapRenderDetail();
+  mapBindCanvas();
+
+  if (mapResizeObs) mapResizeObs.disconnect();
+  mapResizeObs = new ResizeObserver(() => { if (state.view === "map") mapRebuild(); });
+  mapResizeObs.observe(document.querySelector(".map-canvas-wrap"));
+
+  if (!state.mapLoaded) {
+    document.getElementById("map-filters").innerHTML = `<div class="muted">Chargement…</div>`;
+    loadMapData()
+      .then(() => { if (state.view === "map") { mapRenderFilters(); mapRebuild(); } })
+      .catch(e => toast(e.message, true));
+  } else {
+    mapRenderFilters();
+    mapRebuild();
+  }
 }
 
 // ---------- QUEUE ----------

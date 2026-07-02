@@ -177,6 +177,53 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .type-badge:hover { filter: brightness(1.2); }
 .job-del { line-height: 1; }
 
+/* ---------- Library map (treemap) ---------- */
+.map-layout {
+  display: flex; gap: 14px; align-items: stretch;
+  height: calc(100vh - 170px); min-height: 420px;
+}
+.map-side {
+  width: 240px; flex: 0 0 240px; margin-bottom: 0;
+  overflow-y: auto;
+}
+.map-side h3 { margin: 14px 0 8px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.map-main {
+  flex: 1; min-width: 0; margin-bottom: 0; padding: 10px;
+  display: flex; flex-direction: column;
+}
+.map-toolbar { display: flex; align-items: center; gap: 6px; padding: 2px 4px 10px; }
+.map-crumb { font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.map-crumb a { color: var(--accent); text-decoration: none; }
+.map-crumb a:hover { text-decoration: underline; }
+.map-canvas-wrap { flex: 1; min-height: 0; position: relative; overflow: hidden; border-radius: 6px; }
+.map-canvas-wrap canvas { display: block; position: absolute; inset: 0; }
+.map-detail {
+  width: 300px; flex: 0 0 300px; margin-bottom: 0;
+  overflow-y: auto; position: relative; transition: flex-basis .15s ease, width .15s ease;
+}
+.map-detail.collapsed { width: 34px; flex-basis: 34px; padding: 10px 4px; overflow: hidden; }
+.map-detail.collapsed #map-detail-body { display: none; }
+.map-collapse {
+  position: absolute; top: 8px; left: 8px;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--muted);
+  border-radius: 6px; width: 24px; height: 24px; cursor: pointer; line-height: 1;
+}
+.map-collapse:hover { color: var(--text); }
+.map-detail #map-detail-body { margin-top: 30px; }
+.map-file-title { font-weight: 600; word-break: break-all; margin-bottom: 4px; }
+.map-kv { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.map-kv span { color: var(--muted); }
+.map-check { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 13px; cursor: pointer; }
+.map-check .map-check-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.map-check .muted { font-size: 11px; white-space: nowrap; }
+.map-swatch { width: 14px; height: 14px; border-radius: 3px; flex: 0 0 14px; border: 1px solid var(--line); }
+
+@media (max-width: 1100px) {
+  .map-layout { flex-wrap: wrap; height: auto; }
+  .map-side, .map-detail { width: 100%; flex-basis: 100%; }
+  .map-canvas-wrap { height: 60vh; }
+}
+
 /* Hide secondary columns on narrow viewports */
 @media (max-width: 860px) {
   .col-sec { display: none; }

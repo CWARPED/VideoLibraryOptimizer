@@ -8,6 +8,7 @@ launch. Without them, the cached default estimate is returned.
 
 from __future__ import annotations
 
+import os
 from collections import defaultdict
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -73,6 +74,60 @@ async def list_movies(
             only_candidates=only_candidates, limit=limit, offset=offset
         )
     return {"movies": [media_to_dict(m) for m in movies]}
+
+
+def _file_category(d: dict) -> str:
+    """Map a serialised media file to a map category."""
+    if d.get("reencoded"):
+        return "reencoded"
+    reason = d.get("excluded_reason")
+    if reason is None:
+        return "candidate"
+    return "efficient" if exclusion_category(reason) == "efficient" else "excluded"
+
+
+def _root_matcher(roots: list[dict]):
+    """Return path -> scan root display_path (longest-prefix match), or None."""
+    # Longest normalised path first so nested roots win over their parents.
+    norm_roots = sorted(
+        ((r["path"], r["display_path"]) for r in roots),
+        key=lambda t: len(t[0]), reverse=True,
+    )
+
+    def match(path: str) -> str | None:
+        p = os.path.normcase(os.path.abspath(path))
+        for norm, display in norm_roots:
+            if p == norm or p.startswith(norm + os.sep):
+                return display
+        return None
+
+    return match
+
+
+@router.get("/files")
+async def list_all_files(
+    request: Request,
+    codec: str | None = Query(None),
+    profile: str | None = Query(None),
+):
+    """Every scanned file, flat — for the library map (treemap) view."""
+    state = get_state(request)
+    media = state.scan_repo.list_all()
+    _rescore(state, media, _parse_codec(codec), profile)
+    match_root = _root_matcher(state.scan_repo.list_scan_roots())
+    files = []
+    for mf in media:
+        d = media_to_dict(mf)
+        d["category"] = _file_category(d)
+        d["root"] = match_root(mf.path)
+        files.append(d)
+    return {"files": files}
+
+
+@router.get("/scans")
+async def list_scan_roots(request: Request):
+    """Scanned root folders persisted across restarts (for map filters)."""
+    return {"scans": get_state(request).scan_repo.list_scan_roots()}
 
 
 @router.get("/excluded")

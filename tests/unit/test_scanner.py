@@ -253,6 +253,28 @@ def test_delete_missing_root_scope_is_not_a_prefix_match(db):
     assert repo.get_by_id(fid) is not None
 
 
+def test_list_all_returns_every_cached_row(tmp_path: Path, db, clock):
+    _make_library(tmp_path)
+    repo = ScanRepo(db)
+    ScanService(repo, _probe_ok, _score_ok, clock).scan(str(tmp_path))
+    everything = repo.list_all()
+    assert len(everything) == 3  # 1 movie + 2 episodes
+    kinds = {m.classification.kind for m in everything}
+    assert kinds == {MediaKind.MOVIE, MediaKind.EPISODE}
+
+
+def test_record_scan_root_upsert_and_list(db):
+    repo = ScanRepo(db)
+    assert repo.list_scan_roots() == []
+    repo.record_scan_root(r"D:\Films", now=1.0, total=5)
+    repo.record_scan_root(r"d:\films\ ".strip(), now=2.0, total=7)  # same root, normalised
+    roots = repo.list_scan_roots()
+    assert len(roots) == 1
+    assert roots[0]["last_total"] == 7
+    assert roots[0]["first_scanned_at"] == 1.0
+    assert roots[0]["last_scanned_at"] == 2.0
+
+
 # --- parallel scan -------------------------------------------------------
 def test_parallel_scan_probes_all_files(tmp_path: Path, db, clock):
     import threading

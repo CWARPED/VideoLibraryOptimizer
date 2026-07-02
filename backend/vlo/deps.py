@@ -227,6 +227,8 @@ class AppState:
                 "scan %s finished: %d files (%d probed, %d cached, %d errors)",
                 session.id, result.total, result.probed, result.cached, result.errors,
             )
+            # Remember the root so the library map can group files by scan.
+            self.scan_repo.record_scan_root(session.root, time.time(), result.total)
             return result
         except Exception as exc:  # noqa: BLE001
             session.last_error = str(exc)

@@ -96,6 +96,38 @@ def test_scan_cancel_by_id(client):
     assert c.post("/api/scan/cancel/nope").status_code == 404
 
 
+def test_files_flat_listing_with_categories_and_roots(client):
+    c, state = client
+    _add_movie(state, r"D:\Films\Candidate.mkv")
+    _add_movie(state, r"D:\Films\Efficient.mkv", excluded="already efficient")
+    _add_movie(state, r"D:\Films\DoVi.mkv", excluded="dolby vision source")
+    _add_movie(state, r"D:\Autre\Done.mkv", reencoded=True)
+    state.scan_repo.record_scan_root(r"D:\Films", now=1.0, total=3)
+
+    files = {f["path"]: f for f in c.get("/api/files").json()["files"]}
+    assert len(files) == 4
+    assert files[r"D:\Films\Candidate.mkv"]["category"] == "candidate"
+    assert files[r"D:\Films\Efficient.mkv"]["category"] == "efficient"
+    assert files[r"D:\Films\DoVi.mkv"]["category"] == "excluded"
+    assert files[r"D:\Autre\Done.mkv"]["category"] == "reencoded"
+    # Root matching: files under the recorded root get its display path.
+    assert files[r"D:\Films\Candidate.mkv"]["root"] == r"D:\Films"
+    assert files[r"D:\Autre\Done.mkv"]["root"] is None
+
+
+def test_scans_lists_persisted_roots(client):
+    c, state = client
+    assert c.get("/api/scans").json() == {"scans": []}
+    state.scan_repo.record_scan_root(r"D:\Films", now=1.0, total=10)
+    state.scan_repo.record_scan_root(r"D:\Films", now=2.0, total=12)  # upsert
+    scans = c.get("/api/scans").json()["scans"]
+    assert len(scans) == 1
+    assert scans[0]["display_path"] == r"D:\Films"
+    assert scans[0]["last_total"] == 12
+    assert scans[0]["last_scanned_at"] == 2.0
+    assert scans[0]["first_scanned_at"] == 1.0
+
+
 def test_batch_requires_eligible_files(client):
     c, _ = client
     r = c.post("/api/jobs/batch", json={"codec": "X265", "profile_name": "Light",

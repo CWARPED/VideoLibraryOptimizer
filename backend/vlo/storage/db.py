@@ -119,6 +119,15 @@ CREATE TABLE IF NOT EXISTS setting (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS scan_root (
+    id               INTEGER PRIMARY KEY,
+    path             TEXT UNIQUE NOT NULL,
+    display_path     TEXT NOT NULL,
+    first_scanned_at REAL NOT NULL,
+    last_scanned_at  REAL NOT NULL,
+    last_total       INTEGER NOT NULL DEFAULT 0
+);
 """
 
 # Default reference bits-per-pixel targets, by source height band (live action).

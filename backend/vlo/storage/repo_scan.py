@@ -210,6 +210,45 @@ class ScanRepo:
             ).fetchall()
         return [self._row_to_media(r) for r in rows]
 
+    def list_all(self) -> list[MediaFile]:
+        """Every cached file (movies, episodes, excluded, re-encoded)."""
+        with self._db.lock:
+            rows = self._db.conn.execute(
+                "SELECT * FROM media_file ORDER BY path"
+            ).fetchall()
+        return [self._row_to_media(r) for r in rows]
+
+    # --- scanned roots (persisted for the library map) --------------------
+    def record_scan_root(self, display_path: str, now: float, total: int) -> None:
+        """Upsert a scanned root folder (keyed by its normalised absolute path)."""
+        norm = os.path.normcase(os.path.abspath(display_path)).rstrip("\\/")
+        with self._db.lock:
+            self._db.conn.execute(
+                "INSERT INTO scan_root (path, display_path, first_scanned_at,"
+                " last_scanned_at, last_total) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(path) DO UPDATE SET display_path = excluded.display_path,"
+                " last_scanned_at = excluded.last_scanned_at,"
+                " last_total = excluded.last_total",
+                (norm, display_path, now, now, total),
+            )
+            self._db.conn.commit()
+
+    def list_scan_roots(self) -> list[dict]:
+        with self._db.lock:
+            rows = self._db.conn.execute(
+                "SELECT * FROM scan_root ORDER BY display_path"
+            ).fetchall()
+        return [
+            {
+                "path": r["path"],
+                "display_path": r["display_path"],
+                "first_scanned_at": r["first_scanned_at"],
+                "last_scanned_at": r["last_scanned_at"],
+                "last_total": r["last_total"],
+            }
+            for r in rows
+        ]
+
     def list_all_episodes(self) -> list[MediaFile]:
         with self._db.lock:
             rows = self._db.conn.execute(
