@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -32,9 +33,13 @@ ContentFn = Callable[[str, Classification], tuple[str, bool, str]]
 
 
 @dataclass(slots=True)
-class ScanStatus:
-    running: bool = False
-    root: str | None = None
+class ScanSession:
+    """One scan run (several can be active at once, on different roots)."""
+
+    id: str
+    root: str
+    force: bool = False
+    running: bool = True
     total: int = 0
     done: int = 0
     probed: int = 0
@@ -42,6 +47,24 @@ class ScanStatus:
     errors: int = 0
     current_path: str = ""
     last_error: str | None = None
+    cancel: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "scan_id": self.id,
+            "root": self.root,
+            "running": self.running,
+            "total": self.total,
+            "done": self.done,
+            "probed": self.probed,
+            "cached": self.cached,
+            "errors": self.errors,
+            "current_path": self.current_path,
+            "last_error": self.last_error,
+        }
+
+
+_MAX_FINISHED_SESSIONS = 10  # finished scans kept for the UI history
 
 
 @dataclass
@@ -55,8 +78,7 @@ class AppState:
     probe_service: ProbeService
     broadcaster: Broadcaster
     job_manager: JobManager
-    scan_status: ScanStatus = field(default_factory=ScanStatus)
-    _scan_cancel: bool = False
+    scans: dict[str, ScanSession] = field(default_factory=dict)
 
     # --- scoring config (persisted settings override env defaults) ------
     def scoring_config(self) -> ScoringConfig:
@@ -131,14 +153,36 @@ class AppState:
         return resolve
 
     # --- scan orchestration --------------------------------------------
-    async def run_scan(self, root: str, force: bool = False) -> ScanProgress:
-        if self.scan_status.running:
-            raise RuntimeError("a scan is already running")
+    def start_scan(self, root: str, force: bool = False) -> ScanSession:
+        """Register a new scan session and run it in the background.
 
-        self._scan_cancel = False
-        self.scan_status = ScanStatus(running=True, root=root)
+        Several scans may run in parallel, but never two on the same root.
+        """
+        session = self._new_session(root, force)
+        asyncio.create_task(self._run_scan_session(session))
+        return session
+
+    async def run_scan(self, root: str, force: bool = False) -> ScanProgress:
+        """Run a scan to completion (awaitable variant of :meth:`start_scan`)."""
+        return await self._run_scan_session(self._new_session(root, force))
+
+    def _new_session(self, root: str, force: bool) -> ScanSession:
+        norm = os.path.normcase(os.path.abspath(root))
+        for s in self.scans.values():
+            if s.running and os.path.normcase(os.path.abspath(s.root)) == norm:
+                raise RuntimeError("ce dossier est déjà en cours de scan")
+        # Cap the finished-session history so the dict cannot grow unbounded.
+        finished = [sid for sid, s in self.scans.items() if not s.running]
+        for sid in finished[:-_MAX_FINISHED_SESSIONS]:
+            del self.scans[sid]
+        session = ScanSession(id=uuid.uuid4().hex[:8], root=root, force=force)
+        self.scans[session.id] = session
+        return session
+
+    async def _run_scan_session(self, session: ScanSession) -> ScanProgress:
         loop = asyncio.get_running_loop()
         config = self.scoring_config()
+        workers = max(1, int(self.settings_repo.get("scan_workers", self.settings.scan_workers)))
 
         def score_fn(probe: ProbeResult, c: Classification) -> ScoreResult:
             return compute_score(probe, c, config)
@@ -152,44 +196,57 @@ class AppState:
         )
 
         def progress_cb(p: ScanProgress) -> None:
-            st = self.scan_status
-            st.total, st.done = p.total, p.done
-            st.probed, st.cached, st.errors = p.probed, p.cached, p.errors
-            st.current_path = p.current_path
+            session.total, session.done = p.total, p.done
+            session.probed, session.cached, session.errors = p.probed, p.cached, p.errors
+            session.current_path = p.current_path
             # Throttle: publish roughly every 5 files.
             if p.done % 5 == 0 or p.done == p.total:
                 loop.call_soon_threadsafe(
                     self.broadcaster.publish,
                     {
                         "type": "scan_progress",
+                        "scan_id": session.id, "root": session.root,
                         "total": p.total, "done": p.done,
                         "probed": p.probed, "cached": p.cached, "errors": p.errors,
                         "current_path": p.current_path,
                     },
                 )
 
-        logging.getLogger("vlo.scan").info("scan started: %s (force=%s)", root, force)
+        logging.getLogger("vlo.scan").info(
+            "scan %s started: %s (force=%s, workers=%d)",
+            session.id, session.root, session.force, workers,
+        )
         try:
             result = await asyncio.to_thread(
-                service.scan, root,
-                force=force, progress_cb=progress_cb,
-                should_cancel=lambda: self._scan_cancel,
+                service.scan, session.root,
+                force=session.force, progress_cb=progress_cb,
+                should_cancel=lambda: session.cancel,
+                workers=workers,
             )
             logging.getLogger("vlo.scan").info(
-                "scan finished: %d files (%d probed, %d cached, %d errors)",
-                result.total, result.probed, result.cached, result.errors,
+                "scan %s finished: %d files (%d probed, %d cached, %d errors)",
+                session.id, result.total, result.probed, result.cached, result.errors,
             )
             return result
         except Exception as exc:  # noqa: BLE001
-            self.scan_status.last_error = str(exc)
-            logging.getLogger("vlo.scan").exception("scan crashed")
+            session.last_error = str(exc)
+            logging.getLogger("vlo.scan").exception("scan %s crashed", session.id)
             raise
         finally:
-            self.scan_status.running = False
-            self.broadcaster.publish({"type": "scan_done", "root": root})
+            session.running = False
+            self.broadcaster.publish(
+                {"type": "scan_done", "scan_id": session.id, "root": session.root,
+                 "errors": session.errors, "last_error": session.last_error}
+            )
 
-    def cancel_scan(self) -> None:
-        self._scan_cancel = True
+    def cancel_scan(self, scan_id: str | None = None) -> bool:
+        """Cancel one scan by id, or every running scan when no id is given."""
+        hit = False
+        for s in self.scans.values():
+            if s.running and (scan_id is None or s.id == scan_id):
+                s.cancel = True
+                hit = True
+        return hit
 
     # --- post-processing cache refresh ---------------------------------
     async def refresh_media_file(self, file_id: int) -> None:

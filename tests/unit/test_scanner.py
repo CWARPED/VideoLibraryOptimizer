@@ -231,3 +231,65 @@ def test_delete_missing_removes_rows_without_jobs(db):
     removed = repo.delete_missing(present_paths=set())
     assert removed == 1
     assert repo.get_by_id(fid) is None
+
+
+def test_delete_missing_scoped_to_root_keeps_other_folders(db):
+    """Scanning one folder must never wipe the cache of another folder."""
+    repo = ScanRepo(db)
+    fid_films = _insert_media(repo, r"D:\Films\gone.mkv")
+    fid_series = _insert_media(repo, r"D:\Series\kept.mkv")
+    removed = repo.delete_missing(present_paths=set(), root=r"D:\Films")
+    assert removed == 1
+    assert repo.get_by_id(fid_films) is None
+    assert repo.get_by_id(fid_series) is not None  # other root untouched
+
+
+def test_delete_missing_root_scope_is_not_a_prefix_match(db):
+    """D:\\Films must not swallow D:\\Films HD (path prefix != folder)."""
+    repo = ScanRepo(db)
+    fid = _insert_media(repo, r"D:\Films HD\kept.mkv")
+    removed = repo.delete_missing(present_paths=set(), root=r"D:\Films")
+    assert removed == 0
+    assert repo.get_by_id(fid) is not None
+
+
+# --- parallel scan -------------------------------------------------------
+def test_parallel_scan_probes_all_files(tmp_path: Path, db, clock):
+    import threading
+
+    _make_library(tmp_path)
+    repo = ScanRepo(db)
+    lock = threading.Lock()
+    calls = {"probe": 0}
+
+    def counting_probe(path: str, size: int) -> ProbeResult:
+        with lock:
+            calls["probe"] += 1
+        return _probe_ok(path, size)
+
+    svc = ScanService(repo, counting_probe, _score_ok, clock)
+    first = svc.scan(str(tmp_path), workers=4)
+    assert first.total == 3
+    assert first.done == 3
+    assert first.probed == 3
+    assert calls["probe"] == 3
+
+    # Second parallel scan: cache hits, no new probes.
+    second = svc.scan(str(tmp_path), workers=4)
+    assert second.cached == 3
+    assert calls["probe"] == 3
+    assert len(repo.list_movies()) == 1
+
+
+def test_parallel_scan_survives_probe_errors(tmp_path: Path, db, clock):
+    _make_library(tmp_path)
+    repo = ScanRepo(db)
+
+    def failing_probe(path: str, size: int) -> ProbeResult:
+        raise ProbeError("corrupt")
+
+    result = ScanService(repo, failing_probe, _score_ok, clock).scan(
+        str(tmp_path), workers=4
+    )
+    assert result.done == 3
+    assert result.errors == 3

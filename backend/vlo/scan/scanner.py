@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from ..config import VIDEO_EXTENSIONS
@@ -83,45 +85,89 @@ class ScanService:
         force: bool = False,
         progress_cb: ProgressFn | None = None,
         should_cancel: Callable[[], bool] | None = None,
+        workers: int = 1,
     ) -> ScanProgress:
+        """Walk ``root`` and probe/score every video file.
+
+        ``workers > 1`` probes files concurrently in a thread pool (ffprobe is
+        I/O + subprocess bound); DB writes stay serialised by the DB lock.
+        """
         entries = list(iter_video_files(root))
         total = len(entries)
         progress = ScanProgress(total=total, done=0, current_path="", probed=0, cached=0, errors=0)
-        present: set[str] = set()
+        present = {e.path for e in entries}
 
-        for entry in entries:
-            if should_cancel and should_cancel():
-                break
-            present.add(entry.path)
-            progress.current_path = entry.path
+        def cancelled() -> bool:
+            return bool(should_cancel and should_cancel())
 
-            if not force and self._repo.cache_is_fresh(entry.path, entry.size_bytes, entry.mtime):
-                progress.cached += 1
-            else:
-                try:
-                    self._process(entry)
-                    progress.probed += 1
-                except ProbeError as exc:
-                    progress.errors += 1
-                    logger.warning("probe failed for %s: %s", entry.path, exc)
-                    self._persist_excluded(entry, f"probe failed: {exc}")
-                except Exception as exc:  # noqa: BLE001 - one bad file must not kill the scan
-                    progress.errors += 1
-                    logger.exception("scan error for %s", entry.path)
-                    self._persist_excluded(entry, f"scan error: {type(exc).__name__}: {exc}")
+        if workers <= 1:
+            for entry in entries:
+                if cancelled():
+                    break
+                self._handle_entry(entry, force, progress, progress_cb, None)
+        else:
+            lock = threading.Lock()
+            with ThreadPoolExecutor(
+                max_workers=workers, thread_name_prefix="vlo-scan"
+            ) as pool:
+                def worker(entry: FileEntry) -> None:
+                    if cancelled():
+                        return
+                    self._handle_entry(entry, force, progress, progress_cb, lock)
 
-            progress.done += 1
-            if progress_cb:
-                progress_cb(progress)
+                for _ in pool.map(worker, entries):
+                    pass
 
-        # Drop cache rows for files that no longer exist (only on a full scan).
-        # A failure here must never lose an otherwise-completed scan.
-        if not (should_cancel and should_cancel()):
+        # Drop cache rows (under this root only) for files that no longer
+        # exist — never on a cancelled scan, and a failure here must never
+        # lose an otherwise-completed scan.
+        if not cancelled():
             try:
-                self._repo.delete_missing(present)
+                self._repo.delete_missing(present, root=root)
             except Exception:  # noqa: BLE001
                 logger.exception("delete_missing failed (scan results kept)")
         return progress
+
+    def _handle_entry(
+        self,
+        entry: FileEntry,
+        force: bool,
+        progress: ScanProgress,
+        progress_cb: ProgressFn | None,
+        lock: threading.Lock | None,
+    ) -> None:
+        outcome = "cached"
+        if force or not self._repo.cache_is_fresh(entry.path, entry.size_bytes, entry.mtime):
+            try:
+                self._process(entry)
+                outcome = "probed"
+            except ProbeError as exc:
+                outcome = "errors"
+                logger.warning("probe failed for %s: %s", entry.path, exc)
+                self._persist_excluded(entry, f"probe failed: {exc}")
+            except Exception as exc:  # noqa: BLE001 - one bad file must not kill the scan
+                outcome = "errors"
+                logger.exception("scan error for %s", entry.path)
+                self._persist_excluded(entry, f"scan error: {type(exc).__name__}: {exc}")
+
+        if lock is not None:
+            with lock:
+                self._bump(progress, entry, outcome, progress_cb)
+        else:
+            self._bump(progress, entry, outcome, progress_cb)
+
+    @staticmethod
+    def _bump(
+        progress: ScanProgress,
+        entry: FileEntry,
+        outcome: str,
+        progress_cb: ProgressFn | None,
+    ) -> None:
+        progress.current_path = entry.path
+        setattr(progress, outcome, getattr(progress, outcome) + 1)
+        progress.done += 1
+        if progress_cb:
+            progress_cb(progress)
 
     def _process(self, entry: FileEntry) -> None:
         probe = self._probe(entry.path, entry.size_bytes)

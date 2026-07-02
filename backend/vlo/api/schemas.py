@@ -61,6 +61,7 @@ class SettingsUpdate(BaseModel):
     filename_tag: str | None = None
     rewrite_codec_tags: bool | None = None
     audio_lossless_to_opus: bool | None = None
+    scan_workers: int | None = Field(default=None, ge=1, le=32)
 
 
 # --- exclusion categorisation ------------------------------------------

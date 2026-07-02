@@ -23,11 +23,7 @@ async def ws_endpoint(websocket: WebSocket):
     await websocket.send_json({
         "type": "snapshot",
         "jobs": [job_to_dict(j) for j in state.jobs_repo.list()],
-        "scan": {
-            "running": state.scan_status.running,
-            "done": state.scan_status.done,
-            "total": state.scan_status.total,
-        },
+        "scans": [s.to_dict() for s in state.scans.values()],
     })
 
     async def receiver() -> None:

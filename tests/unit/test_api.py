@@ -76,6 +76,26 @@ def test_scan_invalid_dir(client):
     assert r.status_code == 400
 
 
+def test_scan_status_lists_sessions(client):
+    c, state = client
+    assert c.get("/api/scan/status").json() == {"scans": []}
+    from vlo.deps import ScanSession
+    state.scans["abc123"] = ScanSession(id="abc123", root="/lib", total=10, done=4)
+    scans = c.get("/api/scan/status").json()["scans"]
+    assert scans[0]["scan_id"] == "abc123"
+    assert scans[0]["root"] == "/lib"
+    assert scans[0]["running"] is True
+
+
+def test_scan_cancel_by_id(client):
+    c, state = client
+    from vlo.deps import ScanSession
+    state.scans["abc123"] = ScanSession(id="abc123", root="/lib")
+    assert c.post("/api/scan/cancel/abc123").status_code == 200
+    assert state.scans["abc123"].cancel is True
+    assert c.post("/api/scan/cancel/nope").status_code == 404
+
+
 def test_batch_requires_eligible_files(client):
     c, _ = client
     r = c.post("/api/jobs/batch", json={"codec": "X265", "profile_name": "Light",

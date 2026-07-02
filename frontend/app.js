@@ -55,7 +55,7 @@ const state = {
   selEpisodes: new Set(), // episode file ids selected in the open series
   movieSort: { key: "score", dir: "desc" },
   seriesSort: { key: "est_gain_bytes", dir: "desc" },
-  scan: { running: false, done: 0, total: 0, probed: 0, cached: 0, errors: 0 },
+  scans: {}, // scan_id -> {scan_id, root, running, done, total, probed, cached, errors, current_path}
   codec: "X265",
   eight_bit: false,
   profile: "Light",
@@ -78,20 +78,22 @@ function handleWS(m) {
   switch (m.type) {
     case "snapshot":
       state.jobs = m.jobs || [];
-      if (m.scan) Object.assign(state.scan, m.scan);
+      if (m.scans) { state.scans = {}; m.scans.forEach((s) => { state.scans[s.scan_id] = s; }); }
       refreshQueueBadge();
       if (state.view === "queue") render();
       if (state.view === "scan") render();
       break;
-    case "scan_progress":
-      Object.assign(state.scan, m, { running: true });
+    case "scan_progress": {
+      const s = state.scans[m.scan_id] || (state.scans[m.scan_id] = { scan_id: m.scan_id });
+      Object.assign(s, m, { running: true });
       if (state.view === "scan") renderScanProgress();
       break;
+    }
     case "scan_done":
-      state.scan.running = false;
+      if (state.scans[m.scan_id]) state.scans[m.scan_id].running = false;
       if (state.view === "scan") { renderScanProgress(); loadExcluded(); }
       reloadLibrary();
-      toast("Scan terminé");
+      toast(`Scan terminé — ${m.root || ""}`);
       break;
     case "job_progress":
       patchJob(m.job_id, { progress: m.progress, speed: m.speed, eta_s: m.eta_s, state: m.state });
@@ -264,13 +266,12 @@ function renderScan() {
         <label class="muted"><input type="checkbox" id="scan-force" /> Forcer la ré-analyse (ignorer le cache)</label>
         <div class="spacer"></div>
         <button class="btn" id="scan-btn">Lancer le scan</button>
-        <button class="btn ghost" id="scan-cancel">Annuler</button>
       </div>
+      <div class="muted" style="margin-top:8px">Plusieurs scans peuvent tourner en parallèle (un par dossier). Le nettoyage du cache ne touche que le dossier scanné.</div>
     </div>
-    <div class="panel" id="scan-prog"></div>
+    <div id="scan-prog"></div>
     <div class="panel" id="excluded-panel"></div>`;
   document.getElementById("scan-btn").addEventListener("click", startScan);
-  document.getElementById("scan-cancel").addEventListener("click", () => api("/api/scan/cancel", { method: "POST" }));
   const saved = localStorage.getItem("vlo-path");
   if (saved) document.getElementById("scan-path").value = saved;
   renderScanProgress();
@@ -282,29 +283,48 @@ async function startScan() {
   localStorage.setItem("vlo-path", path);
   const force = document.getElementById("scan-force").checked;
   try {
-    await api("/api/scan", { method: "POST", body: JSON.stringify({ root_path: path, force }) });
-    state.scan = { running: true, done: 0, total: 0, probed: 0, cached: 0, errors: 0 };
+    const r = await api("/api/scan", { method: "POST", body: JSON.stringify({ root_path: path, force }) });
+    state.scans[r.scan_id] = {
+      scan_id: r.scan_id, root: path, running: true,
+      done: 0, total: 0, probed: 0, cached: 0, errors: 0, current_path: "",
+    };
     renderScanProgress();
     toast("Scan démarré");
   } catch (e) { toast(e.message, true); }
 }
+async function cancelScan(id) {
+  try { await api(`/api/scan/cancel/${id}`, { method: "POST" }); toast("Annulation…"); }
+  catch (e) { toast(e.message, true); }
+}
 function renderScanProgress() {
   const el = document.getElementById("scan-prog");
   if (!el) return;
-  const s = state.scan;
-  const pct = s.total ? Math.round(s.done / s.total * 100) : 0;
-  el.innerHTML = `
-    <div class="row" style="justify-content:space-between">
-      <strong>${s.running ? "Analyse en cours…" : "Dernier scan"}</strong>
-      <span class="muted">${s.done}/${s.total}</span>
-    </div>
-    <div class="bigprogress" style="margin:12px 0"><span style="width:${pct}%"></span><em>${pct}%</em></div>
-    <div class="row" style="gap:18px">
-      <span class="chip good">${s.probed} analysés</span>
-      <span class="chip">${s.cached} en cache</span>
-      ${s.errors ? `<span class="chip warn" title="Fichiers que ffprobe n'a pas pu lire (corrompus, tronqués…)">${s.errors} illisibles</span>` : ""}
-    </div>
-    <div class="muted" style="margin-top:10px;word-break:break-all">${esc(s.current_path || "")}</div>`;
+  // Running scans first, then the most recent finished ones.
+  const sessions = Object.values(state.scans)
+    .sort((a, b) => (b.running - a.running));
+  if (sessions.length === 0) { el.innerHTML = ""; return; }
+  el.innerHTML = sessions.map((s) => {
+    const pct = s.total ? Math.round(s.done / s.total * 100) : 0;
+    return `
+    <div class="panel" style="margin-bottom:12px">
+      <div class="row" style="justify-content:space-between">
+        <strong>${s.running ? "Analyse en cours…" : "Scan terminé"} <span class="muted" style="font-weight:normal">${esc(s.root || "")}</span></strong>
+        <span class="row" style="gap:10px">
+          <span class="muted">${s.done}/${s.total}</span>
+          ${s.running ? `<button class="btn ghost sm" data-cancel-scan="${s.scan_id}">Annuler</button>` : ""}
+        </span>
+      </div>
+      <div class="bigprogress" style="margin:12px 0"><span style="width:${pct}%"></span><em>${pct}%</em></div>
+      <div class="row" style="gap:18px">
+        <span class="chip good">${s.probed || 0} analysés</span>
+        <span class="chip">${s.cached || 0} en cache</span>
+        ${s.errors ? `<span class="chip warn" title="Fichiers que ffprobe n'a pas pu lire (corrompus, tronqués…)">${s.errors} illisibles</span>` : ""}
+      </div>
+      ${s.running ? `<div class="muted" style="margin-top:10px;word-break:break-all">${esc(s.current_path || "")}</div>` : ""}
+    </div>`;
+  }).join("");
+  el.querySelectorAll("[data-cancel-scan]").forEach((b) =>
+    b.addEventListener("click", () => cancelScan(b.dataset.cancelScan)));
 }
 
 const EXCL_GROUPS = [
@@ -898,6 +918,8 @@ async function renderSettings() {
       <div class="row">
         <label class="field" style="max-width:220px"><span>Encodages simultanés (1 encode 1080p exploite mal un 16c/32t)</span>
           <input type="text" id="set-par" value="${enc.max_parallel_encodes}"></label>
+        <label class="field" style="max-width:220px"><span>Analyses ffprobe simultanées par scan (accélère le scan, surtout sur NAS)</span>
+          <input type="text" id="set-scan-workers" value="${enc.scan_workers ?? 8}"></label>
         <label class="field" style="flex:1"><span>Tag ajouté au nom de fichier (ex. «&nbsp; x265&nbsp;») — laisser vide pour ne rien ajouter</span>
           <input type="text" id="set-tag" value="${esc(enc.filename_tag || "")}" placeholder=" x265"></label>
       </div>
@@ -985,9 +1007,11 @@ async function renderSettings() {
 
   document.getElementById("set-enc-save").addEventListener("click", async () => {
     const par = parseInt(document.getElementById("set-par").value, 10);
+    const sw = parseInt(document.getElementById("set-scan-workers").value, 10);
     try {
       await api("/api/settings", { method: "PUT", body: JSON.stringify({
         max_parallel_encodes: Number.isFinite(par) && par > 0 ? par : 1,
+        scan_workers: Number.isFinite(sw) && sw > 0 ? Math.min(sw, 32) : 8,
         filename_tag: document.getElementById("set-tag").value,
         rewrite_codec_tags: document.getElementById("set-rw").checked,
         audio_lossless_to_opus: document.getElementById("set-audio-opus").checked,

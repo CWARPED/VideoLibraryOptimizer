@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     gain_ref_gb: float = 10.0
     min_overhead_ratio: float = 1.1  # below this, a file is not worth re-encoding
 
+    # Scan throughput: parallel ffprobe workers per scan (also a DB setting).
+    scan_workers: int = 8
+
     # Content-type detection (TMDB). Key/enabled also overridable via DB settings.
     tmdb_api_key: str = ""
     tmdb_enabled: bool = True

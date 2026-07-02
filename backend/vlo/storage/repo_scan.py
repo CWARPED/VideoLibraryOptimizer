@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 from ..core.enums import JobState, MediaKind
@@ -236,19 +237,35 @@ class ScanRepo:
             ).fetchall()
         return [self._row_to_media(r) for r in rows]
 
-    def delete_missing(self, present_paths: set[str]) -> int:
+    def delete_missing(self, present_paths: set[str], root: str | None = None) -> int:
         """Remove cache rows for files no longer on disk. Returns count removed.
+
+        When ``root`` is given, only rows *under that root* are candidates for
+        removal — scanning one folder never wipes the cache of another.
 
         Rows referenced by a *non-terminal* job (queued / encoding / awaiting
         confirmation / etc.) are kept — that job still needs them. For rows
         referenced only by terminal jobs, the job link is nulled first (history
         keeps its own ``source_path``) so the foreign key is not violated.
         """
+        under_root = None
+        if root is not None:
+            root_norm = os.path.normcase(os.path.abspath(root)).rstrip("\\/")
+            prefix = root_norm + os.sep
+
+            def under_root(path: str) -> bool:
+                p = os.path.normcase(os.path.abspath(path))
+                return p == root_norm or p.startswith(prefix)
+
         active_states = tuple(s.value for s in JobState if not s.is_terminal)
         placeholders = ", ".join("?" for _ in active_states)
         with self._db.lock:
             rows = self._db.conn.execute("SELECT id, path FROM media_file").fetchall()
-            stale = [r["id"] for r in rows if r["path"] not in present_paths]
+            stale = [
+                r["id"] for r in rows
+                if r["path"] not in present_paths
+                and (under_root is None or under_root(r["path"]))
+            ]
 
             # Ids still needed by a non-terminal job -> keep them.
             kept: set[int] = set()
