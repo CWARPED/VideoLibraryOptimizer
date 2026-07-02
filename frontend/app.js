@@ -688,17 +688,23 @@ async function encodeSeriesSelection() {
 }
 
 // ---------- MAP (treemap type WinDirStat) ----------
+// Palette aligned with the site variables (accent/warn/bad/good, dark panels).
+const MAP_SCORE_STOPS = [[91, 140, 255], [240, 180, 41], [240, 85, 109]]; // accent -> warn -> bad
+const MAP_GAIN_COLOR = "#3ecf8e";          // reclaimable space (site --good)
+const MAP_SCORE_GRADIENT = "linear-gradient(90deg,#5b8cff,#f0b429,#f0556d)";
+const MAP_CAT_COLORS = { efficient: "#333a49", excluded: "#2a2f3d", reencoded: "#24304a" };
 const MAP_CATS = [
   { key: "candidate", label: "Candidats", swatch: "score" },
-  { key: "efficient", label: "Déjà efficaces", swatch: "#3d4356" },
-  { key: "excluded", label: "Exclus", swatch: "#2e3342" },
-  { key: "reencoded", label: "Réencodés", swatch: "#1f4636" },
+  { key: "efficient", label: "Déjà efficaces", swatch: MAP_CAT_COLORS.efficient },
+  { key: "excluded", label: "Exclus", swatch: MAP_CAT_COLORS.excluded },
+  { key: "reencoded", label: "Réencodés", swatch: MAP_CAT_COLORS.reencoded },
 ];
 const MAP_OTHER_ROOT = "Autres";
 
 let mapTree = null;      // built forest (root node)
 let mapLayout = null;    // {leaves:[{x,y,w,h,f}], dirs:[{x,y,w,h,node}]}
 let mapResizeObs = null;
+let mapSelIds = new Set(); // ids of the currently highlighted files (single or group)
 
 async function loadMapData() {
   const [f, s] = await Promise.all([api(`/api/files?${cp()}`), api("/api/scans")]);
@@ -817,16 +823,14 @@ function mapComputeLayout(focusNode, W, H) {
 // --- colors ----------------------------------------------------------------
 function scoreColor(score) {
   const s = Math.max(0, Math.min(100, score || 0)) / 100;
-  const c1 = [62, 207, 142], c2 = [240, 180, 41], c3 = [240, 85, 109]; // good -> warn -> bad
+  const [c1, c2, c3] = MAP_SCORE_STOPS;
   const [a, b, t] = s < 0.5 ? [c1, c2, s * 2] : [c2, c3, (s - 0.5) * 2];
   const lerp = (u, v) => Math.round(u + (v - u) * t);
   return `rgb(${lerp(a[0], b[0])},${lerp(a[1], b[1])},${lerp(a[2], b[2])})`;
 }
 function mapFileColor(f) {
   if (f.category === "candidate") return scoreColor(f.score);
-  if (f.category === "reencoded") return "#1f4636";
-  if (f.category === "efficient") return "#3d4356";
-  return "#2e3342"; // excluded
+  return MAP_CAT_COLORS[f.category] || MAP_CAT_COLORS.excluded;
 }
 
 // --- drawing ----------------------------------------------------------------
@@ -846,34 +850,35 @@ function mapDraw() {
 
   // Leaves first, then folder borders/titles on top.
   for (const l of mapLayout.leaves) {
+    // Background of the cell = score (candidates) / neutral tone (the rest).
     ctx.fillStyle = mapFileColor(l.f);
     ctx.fillRect(l.x, l.y, l.w, l.h);
-    ctx.strokeStyle = "rgba(0,0,0,.55)";
-    ctx.lineWidth = px;
-    ctx.strokeRect(l.x, l.y, l.w, l.h);
-    if (state.mapSel && state.mapSel.id === l.f.id) {
-      ctx.strokeStyle = "#fff";
-      ctx.lineWidth = 2 * px;
-      ctx.strokeRect(l.x + px, l.y + px, l.w - 2 * px, l.h - 2 * px);
-    }
-    // Inner stroke rectangle: area proportional to the estimated gain.
+    // Reclaimable space = a solid rectangle pinned to the bottom-right corner,
+    // its area proportional to gain/size, in a distinct colour.
     if (l.gain > 0 && l.size > 0) {
       const k = Math.sqrt(Math.min(1, l.gain / l.size));
       const gw = l.w * k, gh = l.h * k;
-      if (gw * z.scale > 5 && gh * z.scale > 5) {
-        ctx.strokeStyle = "rgba(255,255,255,.75)";
-        ctx.lineWidth = px;
-        ctx.strokeRect(l.x + (l.w - gw) / 2, l.y + (l.h - gh) / 2, gw, gh);
-      }
+      ctx.fillStyle = MAP_GAIN_COLOR;
+      ctx.fillRect(l.x + l.w - gw, l.y + l.h - gh, gw, gh);
     }
-    // Label if there is enough on-screen room.
+    ctx.strokeStyle = "rgba(0,0,0,.45)";
+    ctx.lineWidth = px;
+    ctx.strokeRect(l.x, l.y, l.w, l.h);
+    if (mapSelIds.has(l.f.id)) {
+      ctx.strokeStyle = "#e6e9ef";
+      ctx.lineWidth = 2 * px;
+      ctx.strokeRect(l.x + px, l.y + px, l.w - 2 * px, l.h - 2 * px);
+    }
+    // Label (with a soft shadow so it stays legible over any colour).
     const sw = l.w * z.scale, sh = l.h * z.scale;
     if (sw > 72 && sh > 30) {
       const fs = 11 / z.scale;
       ctx.save();
       ctx.beginPath(); ctx.rect(l.x, l.y, l.w, l.h); ctx.clip();
       ctx.font = `${fs}px system-ui, sans-serif`;
-      ctx.fillStyle = "rgba(0,0,0,.8)";
+      ctx.fillStyle = "rgba(246,248,251,.96)";
+      ctx.shadowColor = "rgba(0,0,0,.85)";
+      ctx.shadowBlur = 2.5 / z.scale;
       ctx.fillText(l.name, l.x + 4 * px, l.y + 13 * px);
       if (l.gain > 0 && sh > 44) ctx.fillText(`−${fmtBytes(l.gain)}`, l.x + 4 * px, l.y + 26 * px);
       ctx.restore();
@@ -942,6 +947,29 @@ function mapHitDir(p) {
 }
 function mapResetZoom() { state.mapZoom = { scale: 1, tx: 0, ty: 0 }; mapDraw(); }
 
+// --- selection (single file / folder subtree / whole series) ---------------
+function mapSetSel(sel) {
+  state.mapSel = sel;
+  const ids = !sel ? [] : sel.kind === "file" ? [sel.file.id] : sel.files.map(f => f.id);
+  mapSelIds = new Set(ids.filter(id => id != null));
+}
+function mapSelectFile(f) { mapSetSel({ kind: "file", file: f }); }
+function mapCollectFiles(node) {
+  const out = [];
+  (function walk(n) {
+    for (const l of n.leaves) out.push(l.file);
+    for (const d of n.dirs.values()) walk(d);
+  })(node);
+  return out;
+}
+function mapSelectFolder(node) {
+  mapSetSel({ kind: "group", label: node.name, files: mapCollectFiles(node) });
+}
+function mapSelectSeries(title) {
+  const files = state.mapFiles.filter(f => f.series_title && f.series_title === title);
+  if (files.length) mapSetSel({ kind: "group", label: title, files });
+}
+
 // Pan state shared with the window-level listeners (bound once, the canvas
 // is recreated on every renderMap while window listeners persist).
 const mapPan = { dragging: false, moved: false, lastX: 0, lastY: 0, bound: false };
@@ -986,8 +1014,15 @@ function mapBindCanvas() {
 
   cv.addEventListener("click", (ev) => {
     if (mapPan.moved) return; // it was a pan
-    const leaf = mapHitLeaf(mapToWorld(ev));
-    state.mapSel = leaf ? leaf.f : null;
+    const p = mapToWorld(ev);
+    const leaf = mapHitLeaf(p);
+    if (leaf) {
+      mapSelectFile(leaf.f);
+    } else {
+      // Clicking a folder's frame/header selects its whole subtree.
+      const dir = mapHitDir(p);
+      if (dir) mapSelectFolder(dir.node); else mapSetSel(null);
+    }
     mapRenderDetail();
     mapDraw();
   });
@@ -1036,16 +1071,63 @@ function mapRenderBreadcrumb() {
   }));
 }
 
+const row = (k, v) => `<div class="map-kv"><span>${k}</span><strong>${v}</strong></div>`;
+
+async function mapEncodeIds(ids, label) {
+  if (!ids.length) return;
+  try {
+    await api("/api/jobs/batch", {
+      method: "POST",
+      body: JSON.stringify({
+        codec: state.codec, profile_name: state.profile,
+        eight_bit: state.eight_bit, file_ids: ids,
+      }),
+    });
+    toast(`${label} ajouté(s) à la file d'attente`);
+    fetchJobs();
+  } catch (e) { toast(e.message, true); }
+}
+
 function mapRenderDetail() {
   const el = document.getElementById("map-detail-body");
   const aside = document.getElementById("map-detail");
   if (!el || !aside) return;
   aside.classList.toggle("collapsed", state.mapPanelCollapsed);
   if (state.mapPanelCollapsed) return;
-  const f = state.mapSel;
-  if (!f) { el.innerHTML = `<div class="empty">Clique sur un fichier de la carte pour voir ses détails.</div>`; return; }
+  const sel = state.mapSel;
+  if (!sel) {
+    el.innerHTML = `<div class="empty">Clique sur un fichier pour ses détails, ou sur le cadre d'un dossier pour sélectionner tout son contenu.</div>`;
+    return;
+  }
+  if (sel.kind === "group") return mapRenderGroupDetail(el, sel);
+  mapRenderFileDetail(el, sel.file);
+}
+
+function mapRenderGroupDetail(el, sel) {
+  const files = sel.files;
+  const candidates = files.filter(f => f.category === "candidate" && f.id != null);
+  const sizeTotal = files.reduce((s, f) => s + (f.size_bytes || 0), 0);
+  const gainTotal = candidates.reduce((s, f) => s + (f.est_gain_bytes || 0), 0);
+  const codecLabel = `${state.codec}${state.eight_bit ? " 8-bit" : ""} · ${esc(state.profile)}`;
+  el.innerHTML = `
+    <div class="map-file-title">${esc(sel.label)}</div>
+    <div class="muted" style="margin-bottom:10px">Sélection multiple</div>
+    ${row("Fichiers", `${files.length}`)}
+    ${row("Candidats à encoder", `${candidates.length}`)}
+    ${row("Taille totale", fmtBytes(sizeTotal))}
+    ${row("Gain estimé total", `<span style="color:var(--good)">−${fmtBytes(gainTotal)}</span>`)}
+    ${candidates.length ? `
+      <button class="btn" id="map-encode-group" style="margin-top:12px;width:100%">
+        Encoder ${candidates.length} fichier(s) (${codecLabel})
+      </button>`
+      : `<div class="muted" style="margin-top:12px">Aucun candidat à encoder dans cette sélection.</div>`}`;
+  const btn = document.getElementById("map-encode-group");
+  if (btn) btn.addEventListener("click", () =>
+    mapEncodeIds(candidates.map(f => f.id), `${candidates.length} fichier(s)`));
+}
+
+function mapRenderFileDetail(el, f) {
   const catLabel = (MAP_CATS.find(c => c.key === f.category) || {}).label || f.category;
-  const row = (k, v) => `<div class="map-kv"><span>${k}</span><strong>${v}</strong></div>`;
   el.innerHTML = `
     <div class="map-file-title">${esc(f.filename)}</div>
     <div class="muted" style="word-break:break-all;margin-bottom:10px">${esc(f.path)}</div>
@@ -1064,20 +1146,18 @@ function mapRenderDetail() {
     ${f.category === "candidate" && f.id != null ? `
       <button class="btn" id="map-encode" style="margin-top:12px;width:100%">
         Encoder (${state.codec}${state.eight_bit ? " 8-bit" : ""} · ${esc(state.profile)})
+      </button>` : ""}
+    ${f.series_title ? `
+      <button class="btn ghost sm" id="map-sel-series" style="margin-top:8px;width:100%">
+        ⧉ Sélectionner la série « ${esc(f.series_title)} »
       </button>` : ""}`;
   const btn = document.getElementById("map-encode");
-  if (btn) btn.addEventListener("click", async () => {
-    try {
-      await api("/api/jobs/batch", {
-        method: "POST",
-        body: JSON.stringify({
-          codec: state.codec, profile_name: state.profile,
-          eight_bit: state.eight_bit, file_ids: [f.id],
-        }),
-      });
-      toast("Ajouté à la file d'attente");
-      fetchJobs();
-    } catch (e) { toast(e.message, true); }
+  if (btn) btn.addEventListener("click", () => mapEncodeIds([f.id], "1 fichier"));
+  const sser = document.getElementById("map-sel-series");
+  if (sser) sser.addEventListener("click", () => {
+    mapSelectSeries(f.series_title);
+    mapRenderDetail();
+    mapDraw();
   });
 }
 
@@ -1105,7 +1185,7 @@ function mapRenderFilters() {
 
   const catRows = MAP_CATS.map(c => `<label class="map-check">
       <input type="checkbox" data-map-cat="${c.key}" ${state.mapHidden.cats.has(c.key) ? "" : "checked"}>
-      <span class="map-swatch" style="background:${c.swatch === "score" ? "linear-gradient(90deg, #3ecf8e, #f0b429, #f0556d)" : c.swatch}"></span>
+      <span class="map-swatch" style="background:${c.swatch === "score" ? MAP_SCORE_GRADIENT : c.swatch}"></span>
       <span class="map-check-label">${c.label}</span>
     </label>`).join("");
 
@@ -1114,9 +1194,11 @@ function mapRenderFilters() {
     ${scanRows}
     <h3>Catégories</h3>
     ${catRows}
-    <div class="muted" style="margin-top:12px;font-size:12px">
-      Aire = taille du fichier · couleur = score de priorité ·
-      rectangle blanc = gain de place estimé.
+    <h3>Légende</h3>
+    <div class="map-legend">
+      <div><span class="map-swatch" style="background:${MAP_SCORE_GRADIENT}"></span> fond = score (priorité)</div>
+      <div><span class="map-swatch" style="background:${MAP_GAIN_COLOR}"></span> coin = gain de place estimé</div>
+      <div class="muted" style="font-size:12px;margin-top:6px">Aire d'un pavé = taille du fichier. Clique un dossier pour tout sélectionner.</div>
     </div>`;
 
   el.querySelectorAll("[data-map-scan]").forEach(cb => cb.addEventListener("change", () => {

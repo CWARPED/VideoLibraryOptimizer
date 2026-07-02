@@ -229,7 +229,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .map-check { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 13px; cursor: pointer; }
 .map-check .map-check-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .map-check .muted { font-size: 11px; white-space: nowrap; }
-.map-swatch { width: 14px; height: 14px; border-radius: 3px; flex: 0 0 14px; border: 1px solid var(--line); }
+.map-swatch { width: 14px; height: 14px; border-radius: 3px; flex: 0 0 14px; border: 1px solid var(--line); display: inline-block; }
+.map-legend div { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 2px 0; }
 
 @media (max-width: 1100px) {
   .map-layout { flex-wrap: wrap; height: auto; }
