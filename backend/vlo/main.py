@@ -2,13 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from .api import routes_jobs, routes_library, routes_logs, routes_scan, routes_settings, ws
+from . import sysstats
+from .api import (
+    routes_jobs,
+    routes_library,
+    routes_logs,
+    routes_scan,
+    routes_settings,
+    routes_system,
+    ws,
+)
 from .config import get_settings
 from .deps import AppState, build_app_state
 
@@ -22,9 +33,13 @@ async def lifespan(app: FastAPI):
         state = build_app_state()
         app.state.app = state
     await state.job_manager.start()
+    sys_task = asyncio.create_task(sysstats.broadcast_loop(state.broadcaster))
     try:
         yield
     finally:
+        sys_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await sys_task
         await state.job_manager.stop()
         state.db.close()
 
@@ -38,6 +53,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
     app.include_router(routes_jobs.router)
     app.include_router(routes_settings.router)
     app.include_router(routes_logs.router)
+    app.include_router(routes_system.router)
     app.include_router(ws.router)
 
     @app.get("/api/health")

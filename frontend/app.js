@@ -125,6 +125,9 @@ function handleWS(m) {
       refreshQueueBadge(m);
       if (state.view === "queue") render();
       break;
+    case "system":
+      renderSysmon(m);
+      break;
     case "media_updated":
       // A processed file was re-probed/re-scored -> refresh the library views.
       reloadLibrary();
@@ -159,6 +162,33 @@ async function loadStats() {
     const s = await api("/api/stats");
     setStats(s.total_gain_bytes, s.total_encodes_done);
   } catch (_) {}
+}
+function renderSysmon(d) {
+  const el = document.getElementById("sysmon");
+  if (!el || !d) return;
+  el.classList.remove("hidden");
+  const cpu = d.cpu_percent != null ? Math.round(d.cpu_percent) : null;
+  const mem = d.mem_percent != null ? Math.round(d.mem_percent) : null;
+  const temp = d.temp_c != null ? Math.round(d.temp_c) : null;
+  const hot = cpu != null && cpu >= 85 ? "hot" : "";
+  el.innerHTML =
+    `<span class="sysmon-item">
+       <span class="sysmon-k">CPU</span>
+       <span class="sysmon-bar"><span class="${hot}" style="width:${cpu ?? 0}%"></span></span>
+       <span class="sysmon-v">${cpu != null ? cpu + "%" : "—"}</span>
+     </span>
+     <span class="sysmon-item"><span class="sysmon-k">RAM</span>
+       <span class="sysmon-v">${mem != null ? mem + "%" : "—"}</span></span>` +
+    (temp != null
+      ? `<span class="sysmon-item"><span class="sysmon-v">${temp}°C</span></span>`
+      : `<span class="sysmon-item muted" title="Température CPU indisponible — lance LibreHardwareMonitor pour l'activer">🌡 n/a</span>`);
+  el.title =
+    `CPU ${cpu ?? "—"}%` +
+    (mem != null ? ` · RAM ${mem}% (${fmtBytes(d.mem_used_bytes)} / ${fmtBytes(d.mem_total_bytes)})` : "") +
+    (temp != null ? ` · ${temp}°C (${d.temp_source})` : " · température indisponible (LibreHardwareMonitor requis)");
+}
+async function loadSysmon() {
+  try { renderSysmon(await api("/api/system")); } catch (_) {}
 }
 function refreshQueueBadge(q) {
   const active = state.jobs.filter(j => !["DONE", "REJECTED", "CANCELLED", "FAILED"].includes(j.state)).length;
@@ -1801,5 +1831,6 @@ async function loadFfmpegInfo() {
   await reloadLibrary();
   await fetchJobs();
   loadStats();
+  loadSysmon();
   render();
 })();

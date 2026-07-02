@@ -43,6 +43,14 @@ body {
 .gain-total { display: flex; align-items: center; gap: 6px; color: var(--good); font-size: 13px;
   font-weight: 600; background: rgba(62,207,142,.12); padding: 5px 12px; border-radius: 999px; }
 .gain-total::before { content: "💾"; font-size: 13px; }
+.sysmon { display: flex; align-items: center; gap: 14px; font-size: 12px; color: var(--muted); }
+.sysmon-item { display: flex; align-items: center; gap: 6px; }
+.sysmon-k { color: var(--muted); letter-spacing: .03em; }
+.sysmon-v { color: var(--text); font-variant-numeric: tabular-nums; min-width: 32px; }
+.sysmon-bar { width: 56px; height: 6px; border-radius: 999px; background: var(--panel-2); overflow: hidden; }
+.sysmon-bar > span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--warn)); transition: width .4s ease; }
+.sysmon-bar > span.hot { background: linear-gradient(90deg, var(--warn), var(--bad)); }
+
 .conn { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--bad); }
 .dot.online { background: var(--good); }

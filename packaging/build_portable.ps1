@@ -57,7 +57,7 @@ Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $getpip
 # 4. Install runtime dependencies (matching pyproject [project].dependencies) -
 Write-Host "[build] Installing dependencies into the embeddable runtime..."
 & $py -m pip install --no-warn-script-location `
-    "fastapi>=0.110" "uvicorn[standard]>=0.27" "pydantic>=2.6" "pydantic-settings>=2.2"
+    "fastapi>=0.110" "uvicorn[standard]>=0.27" "pydantic>=2.6" "pydantic-settings>=2.2" "psutil>=5.9"
 
 # 5. Copy app source + launcher ----------------------------------------------
 Write-Host "[build] Copying application files..."
