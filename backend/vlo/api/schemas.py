@@ -20,6 +20,7 @@ class ScanRequest(BaseModel):
 class BatchRequest(BaseModel):
     codec: Codec
     profile_name: str
+    eight_bit: bool = False  # encode 8-bit instead of the default 10-bit (x265 or AV1)
     file_ids: list[int] = Field(default_factory=list)
     series_slug: str | None = None
     season: int | None = None
@@ -60,7 +61,6 @@ class SettingsUpdate(BaseModel):
     filename_tag: str | None = None
     rewrite_codec_tags: bool | None = None
     audio_lossless_to_opus: bool | None = None
-    av1_8bit: bool | None = None
 
 
 # --- exclusion categorisation ------------------------------------------

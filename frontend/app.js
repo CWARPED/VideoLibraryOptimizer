@@ -57,6 +57,7 @@ const state = {
   seriesSort: { key: "est_gain_bytes", dir: "desc" },
   scan: { running: false, done: 0, total: 0, probed: 0, cached: 0, errors: 0 },
   codec: "X265",
+  eight_bit: false,
   profile: "Light",
 };
 
@@ -228,8 +229,10 @@ function encodeControls() {
     <label class="field" style="margin:0">
       <span>Codec</span>
       <select id="sel-codec">
-        <option value="X265" ${state.codec === "X265" ? "selected" : ""}>HEVC x265 10-bit</option>
-        <option value="SVTAV1" ${state.codec === "SVTAV1" ? "selected" : ""}>AV1 (SVT) 10-bit</option>
+        <option value="X265" ${state.codec === "X265" && !state.eight_bit ? "selected" : ""}>HEVC x265 10-bit</option>
+        <option value="X265-8" ${state.codec === "X265" && state.eight_bit ? "selected" : ""}>HEVC x265 8-bit — + compatible</option>
+        <option value="SVTAV1" ${state.codec === "SVTAV1" && !state.eight_bit ? "selected" : ""}>AV1 (SVT) 10-bit</option>
+        <option value="SVTAV1-8" ${state.codec === "SVTAV1" && state.eight_bit ? "selected" : ""}>AV1 (SVT) 8-bit — + compatible</option>
       </select>
     </label>
     <label class="field" style="margin:0">
@@ -240,7 +243,11 @@ function encodeControls() {
 function bindEncodeControls() {
   const c = document.getElementById("sel-codec");
   const p = document.getElementById("sel-profile");
-  if (c) c.addEventListener("change", () => { state.codec = c.value; onEncodeParamsChanged(); });
+  if (c) c.addEventListener("change", () => {
+    state.codec = c.value.startsWith("X265") ? "X265" : "SVTAV1";
+    state.eight_bit = c.value.endsWith("-8");
+    onEncodeParamsChanged();
+  });
   if (p) p.addEventListener("change", () => { state.profile = p.value; onEncodeParamsChanged(); });
 }
 
@@ -481,7 +488,7 @@ async function encodeMovies() {
   try {
     const r = await api("/api/jobs/batch", {
       method: "POST",
-      body: JSON.stringify({ codec: state.codec, profile_name: state.profile, file_ids: ids }),
+      body: JSON.stringify({ codec: state.codec, profile_name: state.profile, eight_bit: state.eight_bit, file_ids: ids }),
     });
     toast(`${r.count} film(s) ajouté(s) à la file`);
     state.selMovies = new Set();
@@ -638,7 +645,7 @@ async function encodeSeriesSelection() {
   try {
     const r = await api("/api/jobs/batch", {
       method: "POST",
-      body: JSON.stringify({ codec: state.codec, profile_name: state.profile, file_ids: ids }),
+      body: JSON.stringify({ codec: state.codec, profile_name: state.profile, eight_bit: state.eight_bit, file_ids: ids }),
     });
     toast(`${r.count} épisode(s) ajouté(s) à la file`);
     state.selEpisodes = new Set();
@@ -896,7 +903,6 @@ async function renderSettings() {
       </div>
       <label class="muted"><input type="checkbox" id="set-rw" ${enc.rewrite_codec_tags ? "checked" : ""}> Réécrire les tokens de codec dans le nom/titre (x264→x265…) — sans effet sur les noms Radarr propres</label>
       <label class="muted"><input type="checkbox" id="set-audio-opus" ${enc.audio_lossless_to_opus ? "checked" : ""}> Compresser l'audio lossless (TrueHD/DTS-HD MA/PCM/FLAC → Opus, transparent) — les pistes déjà compressées (AC3/AAC/DTS) restent intactes</label>
-      <label class="muted"><input type="checkbox" id="set-av1-8bit" ${enc.av1_8bit ? "checked" : ""}> Encoder l'AV1 en 8-bit (au lieu de 10-bit) — décodage plus léger/compatible (ex. VLC), légèrement moins efficace</label>
       <div class="row" style="margin-top:14px"><button class="btn" id="set-enc-save">Enregistrer</button>
       <span class="muted">⚠️ Si Radarr/Sonarr gère tes noms, il peut renommer après coup. Métadonnées vidéo (débit) corrigées automatiquement à chaque encode.</span></div>
     </div>
@@ -985,7 +991,6 @@ async function renderSettings() {
         filename_tag: document.getElementById("set-tag").value,
         rewrite_codec_tags: document.getElementById("set-rw").checked,
         audio_lossless_to_opus: document.getElementById("set-audio-opus").checked,
-        av1_8bit: document.getElementById("set-av1-8bit").checked,
       })});
       toast("Réglages d'encodage enregistrés");
     } catch (e) { toast(e.message, true); }

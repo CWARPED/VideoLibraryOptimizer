@@ -48,8 +48,6 @@ class Settings(BaseSettings):
     rewrite_codec_tags: bool = False  # replace codec tokens in name/title (x264->x265…)
     # Transcode lossless audio (TrueHD/DTS-HD MA/PCM/FLAC) to Opus; lossy stays copied.
     audio_lossless_to_opus: bool = False
-    # Encode AV1 in 8-bit instead of the default 10-bit (lighter/more compatible decode).
-    av1_8bit: bool = False
 
     # Server.
     host: str = "127.0.0.1"

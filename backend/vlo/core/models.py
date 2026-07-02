@@ -148,6 +148,7 @@ class Job:
     profile_name: str
     crf: int
     preset: str
+    eight_bit: bool = False  # encode video 8-bit instead of the default 10-bit (per-job)
     state: JobState = JobState.QUEUED
     progress: float = 0.0
     speed: str | None = None

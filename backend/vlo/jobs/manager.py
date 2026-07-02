@@ -124,9 +124,6 @@ class JobManager:
             "audio_lossless_to_opus", self._settings.audio_lossless_to_opus
         ))
 
-    def _av1_8bit_enabled(self) -> bool:
-        return bool(self._cfg_repo.get("av1_8bit", self._settings.av1_8bit))
-
     def _naming_settings(self) -> tuple[str, bool]:
         tag = self._cfg_repo.get("filename_tag", self._settings.filename_tag) or ""
         rewrite = self._cfg_repo.get("rewrite_codec_tags", self._settings.rewrite_codec_tags)
@@ -140,7 +137,8 @@ class JobManager:
 
     # --- enqueue --------------------------------------------------------
     def enqueue(
-        self, media_files: Sequence[MediaFile], codec: Codec, profile_name: str
+        self, media_files: Sequence[MediaFile], codec: Codec, profile_name: str,
+        *, eight_bit: bool = False,
     ) -> str:
         profile = self._cfg_repo.get_profile(profile_name)
         if profile is None:
@@ -155,6 +153,7 @@ class JobManager:
                 source_path=mf.path,
                 codec=codec,
                 profile_name=profile_name,
+                eight_bit=eight_bit,
                 crf=crf,
                 preset=preset,
                 state=JobState.QUEUED,
@@ -514,7 +513,7 @@ class JobManager:
             probe=src_probe,
             title=title,
             transcode_lossless_audio=self._audio_transcode_enabled(),
-            av1_8bit=self._av1_8bit_enabled(),
+            eight_bit=job.eight_bit,
             **self._codec_param_kwarg(job.codec, params),
         )
         self._set_state(job.id, JobState.ENCODING, out_path_local=str(out_local))

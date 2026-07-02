@@ -63,6 +63,18 @@ class FakeRunner:
         return EncodeResult(cancelled=False, returncode=0)
 
 
+class ArgCaptureRunner(FakeRunner):
+    """FakeRunner that records the ffmpeg argument list it was called with."""
+
+    def __init__(self):
+        super().__init__(out_bytes=200)
+        self.args = None
+
+    async def run(self, args, **kwargs):
+        self.args = list(args)
+        return await super().run(args, **kwargs)
+
+
 async def _decode_ok(_bin, _path):
     return True
 
@@ -552,6 +564,27 @@ async def test_pause_all_holds_future_jobs(tmp_path, db, monkeypatch):
             break
         await asyncio.sleep(0.02)
     assert len([j for j in jobs_repo.list() if j.state is JobState.AWAITING_CONFIRMATION]) == 2
+    await mgr.stop()
+
+
+@pytest.mark.asyncio
+async def test_eight_bit_persists_and_reaches_ffmpeg(tmp_path, db):
+    """The per-job 8-bit choice survives the DB round-trip and hits the encoder."""
+    runner = ArgCaptureRunner()
+    mgr, jobs_repo, scan_repo = _build(tmp_path, db, runner)
+    mf = _persist_media(scan_repo, _make_source(tmp_path))
+
+    await mgr.start()
+    batch = mgr.enqueue([mf], Codec.SVTAV1, "Light", eight_bit=True)
+    jid = jobs_repo.list(batch_id=batch)[0].id
+    for _ in range(250):
+        if runner.args is not None:
+            break
+        await asyncio.sleep(0.02)
+    assert runner.args is not None
+    assert jobs_repo.get(jid).eight_bit is True  # persisted through the DB
+    i = runner.args.index("-pix_fmt")
+    assert runner.args[i + 1] == "yuv420p"  # 8-bit pixel format
     await mgr.stop()
 
 

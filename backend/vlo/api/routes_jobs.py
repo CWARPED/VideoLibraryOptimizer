@@ -37,7 +37,9 @@ async def create_batch(req: BatchRequest, request: Request):
         raise HTTPException(status_code=400, detail="no eligible files in selection")
 
     try:
-        batch_id = state.job_manager.enqueue(media, req.codec, req.profile_name)
+        batch_id = state.job_manager.enqueue(
+            media, req.codec, req.profile_name, eight_bit=req.eight_bit
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"batch_id": batch_id, "count": len(media)}

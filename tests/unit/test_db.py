@@ -9,7 +9,7 @@ def test_fresh_db_seeds_all_default_profiles(tmp_path):
     db = Database(tmp_path / "vlo.db")
     try:
         names = {r["name"] for r in db.conn.execute("SELECT name FROM encode_profile")}
-        assert names == {"Archive", "Light", "Balanced", "Compact", "Mini"}
+        assert names == {"Archive", "Light", "Balanced", "Compact", "Mini", "Extreme"}
     finally:
         db.close()
 

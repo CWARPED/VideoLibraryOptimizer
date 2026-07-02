@@ -12,7 +12,7 @@ from ..core.models import ProbeResult
 
 # 10-bit is forced even for 8-bit sources (better efficiency, less banding).
 PIX_FMT_10BIT = "yuv420p10le"
-PIX_FMT_8BIT = "yuv420p"  # optional for AV1: lighter/more compatible to decode
+PIX_FMT_8BIT = "yuv420p"  # optional per-job: lighter/more compatible to decode
 
 DEFAULT_X265_PARAMS = "profile=main10:aq-mode=3:psy-rd=2.0:psy-rdoq=1.0:rc-lookahead=60:bframes=6"
 DEFAULT_SVTAV1_PARAMS = "tune=0:scd=1:enable-overlays=1"
@@ -112,7 +112,7 @@ def build_encode_command(
     svtav1_params: str = DEFAULT_SVTAV1_PARAMS,
     title: str | None = None,
     transcode_lossless_audio: bool = False,
-    av1_8bit: bool = False,
+    eight_bit: bool = False,
     progress_to_stdout: bool = True,
 ) -> list[str]:
     """Return the full ffmpeg argument list for one re-encode.
@@ -151,17 +151,21 @@ def build_encode_command(
         args += ["-metadata", f"title={title}"]
 
     if codec is Codec.X265:
+        # 8-bit needs the Main profile (Main10 forces 10-bit input).
+        x265p = x265_params or DEFAULT_X265_PARAMS
+        if eight_bit:
+            x265p = x265p.replace("main10", "main")
         args += [
             "-c:v", "libx265",
-            "-pix_fmt", PIX_FMT_10BIT,
+            "-pix_fmt", PIX_FMT_8BIT if eight_bit else PIX_FMT_10BIT,
             "-preset", preset,
             "-crf", str(crf),
-            "-x265-params", x265_params or DEFAULT_X265_PARAMS,
+            "-x265-params", x265p,
         ]
     elif codec is Codec.SVTAV1:
         args += [
             "-c:v", "libsvtav1",
-            "-pix_fmt", PIX_FMT_8BIT if av1_8bit else PIX_FMT_10BIT,
+            "-pix_fmt", PIX_FMT_8BIT if eight_bit else PIX_FMT_10BIT,
             "-preset", str(preset),
             "-crf", str(crf),
             "-g", str(gop_for_fps(probe.fps)),

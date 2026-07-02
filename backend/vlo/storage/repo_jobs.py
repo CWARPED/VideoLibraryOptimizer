@@ -18,14 +18,14 @@ class JobsRepo:
             cur = self._db.conn.execute(
                 """
                 INSERT INTO job (
-                    media_file_id, source_path, codec, profile_name, crf, preset, state,
-                    progress, batch_id, size_src_bytes, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    media_file_id, source_path, codec, profile_name, eight_bit, crf, preset,
+                    state, progress, batch_id, size_src_bytes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.media_file_id, job.source_path, job.codec.value, job.profile_name,
-                    job.crf, job.preset, job.state.value, job.progress, job.batch_id,
-                    job.size_src_bytes, job.created_at,
+                    int(job.eight_bit), job.crf, job.preset, job.state.value, job.progress,
+                    job.batch_id, job.size_src_bytes, job.created_at,
                 ),
             )
             self._db.conn.commit()
@@ -124,6 +124,7 @@ class JobsRepo:
             profile_name=row["profile_name"],
             crf=row["crf"],
             preset=row["preset"],
+            eight_bit=bool(row["eight_bit"]),
             state=JobState(row["state"]),
             progress=row["progress"] or 0.0,
             speed=row["speed"],

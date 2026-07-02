@@ -49,7 +49,7 @@ def test_health(client):
 def test_default_profiles_present(client):
     c, _ = client
     names = {p["name"] for p in c.get("/api/profiles").json()["profiles"]}
-    assert names == {"Archive", "Light", "Balanced", "Compact", "Mini"}
+    assert names == {"Archive", "Light", "Balanced", "Compact", "Mini", "Extreme"}
 
 
 def test_settings_roundtrip(client):

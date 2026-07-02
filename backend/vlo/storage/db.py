@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS job (
     source_path     TEXT NOT NULL,
     codec           TEXT NOT NULL,
     profile_name    TEXT NOT NULL,
+    eight_bit        INTEGER NOT NULL DEFAULT 0,
     crf             INTEGER NOT NULL,
     preset          TEXT NOT NULL,
     state           TEXT NOT NULL,
@@ -152,6 +153,7 @@ _DEFAULT_PROFILES: list[tuple[str, int, int, str, int, float, float]] = [
     ("Balanced", 22, 30, "slow", 6, 0.0, 0.0),
     ("Compact", 26, 36, "slow", 6, 0.0, 0.0),
     ("Mini", 28, 42, "slow", 6, 0.0, 0.0),
+    ("Extreme", 32, 46, "slow", 6, 0.0, 0.0),
 ]
 
 
@@ -184,6 +186,7 @@ class Database:
         ("media_file", "is_anime", "INTEGER DEFAULT 0"),
         ("media_file", "reencoded_at", "REAL"),
         ("reference_bpp", "content_type", "TEXT NOT NULL DEFAULT 'live_action'"),
+        ("job", "eight_bit", "INTEGER NOT NULL DEFAULT 0"),
     ]
 
     def _migrate(self) -> None:

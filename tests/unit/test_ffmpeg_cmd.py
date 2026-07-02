@@ -69,18 +69,29 @@ def test_svtav1_command_core_flags():
     assert "-svtav1-params" in args
 
 
-def test_svtav1_8bit_option():
+def test_eight_bit_option_av1():
     args = build_encode_command(
         ffmpeg_bin="ffmpeg", input_path="in.mkv", output_path="out.mkv",
-        codec=Codec.SVTAV1, crf=28, preset="6", probe=make_probe(), av1_8bit=True,
+        codec=Codec.SVTAV1, crf=28, preset="6", probe=make_probe(), eight_bit=True,
     )
     assert _adjacent(args, "-pix_fmt") == PIX_FMT_8BIT
-    # x265 keeps 10-bit regardless of the AV1-only toggle.
-    x265 = build_encode_command(
+
+
+def test_eight_bit_option_x265_switches_profile_to_main():
+    args = build_encode_command(
         ffmpeg_bin="ffmpeg", input_path="in.mkv", output_path="out.mkv",
-        codec=Codec.X265, crf=20, preset="slow", probe=make_probe(), av1_8bit=True,
+        codec=Codec.X265, crf=20, preset="slow", probe=make_probe(), eight_bit=True,
     )
-    assert _adjacent(x265, "-pix_fmt") == PIX_FMT_10BIT
+    assert _adjacent(args, "-pix_fmt") == PIX_FMT_8BIT
+    params = _adjacent(args, "-x265-params")
+    assert "profile=main" in params and "main10" not in params
+    # 10-bit default still uses Main10.
+    ten = build_encode_command(
+        ffmpeg_bin="ffmpeg", input_path="in.mkv", output_path="out.mkv",
+        codec=Codec.X265, crf=20, preset="slow", probe=make_probe(),
+    )
+    assert _adjacent(ten, "-pix_fmt") == PIX_FMT_10BIT
+    assert "main10" in _adjacent(ten, "-x265-params")
 
 
 def test_mov_text_subtitle_transcoded_to_srt():
