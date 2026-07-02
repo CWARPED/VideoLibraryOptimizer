@@ -131,6 +131,7 @@ def job_to_dict(job: Job) -> dict[str, Any]:
         "profile_name": job.profile_name,
         "crf": job.crf,
         "preset": job.preset,
+        "eight_bit": job.eight_bit,
         "state": job.state.value,
         "progress": round(job.progress, 4),
         "speed": job.speed,

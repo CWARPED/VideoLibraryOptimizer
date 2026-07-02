@@ -748,7 +748,7 @@ function jobCard(j) {
   return `<div class="job" id="job-${j.id}">
     <div class="head">
       <div><div class="name">${esc(j.filename)}</div>
-      <div class="meta">${j.codec} · ${esc(j.profile_name)} · CRF ${j.crf} · preset ${esc(j.preset)}</div></div>
+      <div class="meta">${j.codec === "SVTAV1" ? "AV1" : "HEVC"} ${j.eight_bit ? "8-bit" : "10-bit"} · ${esc(j.profile_name)} · CRF ${j.crf} · preset ${esc(j.preset)}</div></div>
       <div style="display:flex;gap:8px;align-items:center">
         <span class="state ${j.state}">${stateLabel(j.state)}</span>
         ${actions}
