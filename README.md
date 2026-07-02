@@ -7,11 +7,17 @@ Scanne une bibliothèque vidéo (films + séries), repère les fichiers **trop l
 pour leur résolution/durée**, les classe par priorité de réencodage, et permet de
 les réencoder en **léger mais qualitatif** (4K/HD *light*) en toute sécurité.
 
-- **Résolution conservée**, **toutes les pistes audio copiées** (sans réencode),
-  **tous les sous-titres conservés**, chapitres/métadonnées préservés, sortie **MKV**.
-- Codec au choix : **HEVC x265 10-bit** ou **SVT-AV1 10-bit**.
+- **Résolution conservée**, **toutes les pistes audio conservées** (copie sans
+  réencode ; option pour ne réencoder que l'audio **lossless** — TrueHD/DTS-HD MA/
+  PCM/FLAC — en **Opus** transparent), **tous les sous-titres conservés**,
+  chapitres/métadonnées préservés, sortie **MKV**.
+- Codec au choix : **HEVC x265** ou **SVT-AV1**, en **10-bit** (défaut) ou **8-bit**
+  (meilleure compatibilité de lecture), réglable **par job**.
 - Profils de qualité **CRF** prédéfinis, classés **du plus qualitatif au plus
-  compressé** : **Archive** → **Light** → **Balanced** (tous modifiables).
+  compressé** : **Archive → Light → Balanced → Compact → Mini → Extreme** (tous
+  modifiables).
+- **Carte de la bibliothèque** façon *WinDirStat* : treemap où l'aire = la taille du
+  fichier et la couleur = le score de priorité, avec aperçu du gain estimé.
 - **Détection animation/anime** (TMDB + repli mots-clés) avec cible bits/pixel
   dédiée — un anime est jugé « bien encodé » selon des critères d'animation.
 - Sélection explicite de films, de **saisons entières** ou d'**épisodes à l'unité**.
@@ -28,7 +34,15 @@ les réencoder en **léger mais qualitatif** (4K/HD *light*) en toute sécurité
 ## Fonctionnalités
 
 - **Scan récursif** d'un chemin (chemins NAS UNC `\\serveur\partage` supportés),
-  avec cache (un fichier inchangé n'est pas ré-analysé).
+  avec cache (un fichier inchangé n'est pas ré-analysé). **Plusieurs dossiers en
+  parallèle** (une carte de progression par scan), **analyse ffprobe multi-thread**
+  (nombre de workers réglable — utile sur NAS), et **nettoyage du cache limité au
+  dossier scanné** (scanner un dossier ne vide plus le cache des autres).
+- **Carte de la bibliothèque** (*WinDirStat*) : treemap imbriquée par dossiers, un
+  pavé par fichier (**aire = taille**, **couleur = score**, **gain estimé** dessiné
+  dans le pavé) ; **zoom** molette + **drill-down** par dossier, **panneau de
+  détails** repliable, et **filtres** cochables par **scan** et par **catégorie**
+  (candidat / déjà efficace / exclu / réencodé).
 - **Score de priorité composite** : surdébit (bits/pixel réel vs cible par
   résolution **et par type de contenu**) + gain d'espace estimé, recalculé à la
   volée selon le codec/profil choisi. Le cache d'un fichier est **rafraîchi**
@@ -41,18 +55,25 @@ les réencoder en **léger mais qualitatif** (4K/HD *light*) en toute sécurité
 - **Type de contenu** : badge **Film / Animation / Anime** par fichier,
   corrigeable d'un clic (verrouillé contre le re-scan).
 - **Encodages parallèles** : plusieurs jobs simultanés (nombre réglable), chacun
-  annulable individuellement.
-- **File d'attente** : progression temps réel (WebSocket), validation manuelle
-  avant remplacement, **nettoyage** (global + par job), reprise après crash.
+  annulable, **mis en pause / repris** individuellement ; **préchargement** des
+  fichiers suivants en local pendant que l'encodage en cours tourne.
+- **File d'attente** : progression temps réel (WebSocket), **validation manuelle
+  non bloquante** avant remplacement — avec **« Tout valider »** et **validation par
+  saison** —, **épisodes regroupés par série/saison sous un en-tête repliable**,
+  **pause / reprise / arrêt globaux**, nettoyage (global + par job), reprise après
+  crash.
 - **Déjà traité** : les fichiers réencodés par l'app sont marqués, exclus des
   candidats et regroupés à part ; **compteur de gain total** dans la barre de menu.
 - **Nom de sortie** : tag optionnel ajouté au nom de fichier et réécriture
   optionnelle des tokens de codec (x264→x265…). Métadonnées de débit vidéo
   corrigées automatiquement à chaque encode.
 - **Logs** intégrés (avec stderr ffmpeg complet en cas d'échec).
+- **Vidage manuel du cache** films / séries depuis leurs pages respectives (les
+  fichiers sur le disque ne sont jamais touchés ; un nouveau scan régénère le cache).
 - **Réglages** : clé TMDB, mots-clés de repli, tables bits/pixel
-  (live action + animation), profils CRF, encodages simultanés, tag/réécriture du
-  nom, dossier de travail local, pondérations.
+  (live action + animation), profils CRF, encodages simultanés, **analyses de scan
+  simultanées**, **audio lossless → Opus**, tag/réécriture du nom, dossier de travail
+  local, pondérations.
 
 ## Prérequis
 
@@ -143,7 +164,7 @@ backend/vlo/
   api/                 Endpoints FastAPI + WebSocket
   ws/                  Broadcaster pub/sub
   storage/             SQLite (cache scan, jobs, profils, réglages, métadonnées)
-frontend/              UI web (vanilla JS) : Scan / Films / Séries / File / Logs / Réglages
+frontend/              UI web (vanilla JS) : Scan / Films / Séries / Carte / File / Logs / Réglages
 ```
 
 ## Développement & tests
@@ -164,6 +185,12 @@ sous la `SelectorEventLoop` de Windows (mode `--reload`).
   qualité (pas de Quick Sync / NVENC / AMF). Le nombre d'**encodages simultanés**
   est réglable : un seul encode 1080p exploite mal un CPU 16c/32t, plusieurs en
   parallèle saturent mieux les cœurs.
+- **AV1 vs lecture / transcodage** : l'AV1 gagne en taille mais est **plus exigeant
+  à lire** — beaucoup d'appareils et de serveurs (ex. NAS à iGPU ancien) **ne
+  décodent pas l'AV1 en matériel**, ce qui fait échouer ou ramer un transcodage
+  côté serveur (Jellyfin/Plex). Pour une bibliothèque susceptible d'être
+  **transcodée côté serveur**, préférer **HEVC x265** (décodage matériel quasi
+  universel) ; le **8-bit** améliore encore la compatibilité de lecture.
 - **HDR10** : métadonnées colorimétriques recopiées. **Dolby Vision** exclu par
   défaut (un réencode CPU casse souvent la métadonnée DV) — activable dans les
   réglages.
