@@ -38,6 +38,54 @@ def subtitle_codec_overrides(probe: ProbeResult) -> list[str]:
     return args
 
 
+# Lossless audio codecs worth transcoding (big tracks, transparent to re-encode).
+_LOSSLESS_AUDIO = {"truehd", "mlp", "flac", "alac"}
+
+
+def _is_lossless_audio(track) -> bool:
+    """True if an audio track is losslessly encoded (safe to shrink to Opus)."""
+    codec = (track.codec or "").lower()
+    if codec in _LOSSLESS_AUDIO or codec.startswith("pcm_"):
+        return True
+    # DTS is lossy by default; only DTS-HD Master Audio (profile "…MA…") is lossless.
+    if codec in {"dts", "dca"}:
+        return "MA" in (track.profile or "").upper()
+    return False
+
+
+def _opus_bitrate_k(channels: int | None) -> int:
+    """A transparent Opus bitrate for the given channel count."""
+    ch = channels or 2
+    if ch <= 1:
+        return 96
+    if ch == 2:
+        return 160
+    if ch <= 6:
+        return 320
+    return 448
+
+
+def audio_codec_args(probe: ProbeResult, *, transcode_lossless: bool) -> list[str]:
+    """Per-stream audio codec args.
+
+    Default: stream-copy every track (bit-perfect). When ``transcode_lossless`` is
+    set, lossless tracks (TrueHD/DTS-HD MA/PCM/FLAC…) are re-encoded to Opus at a
+    transparent bitrate while already-lossy tracks (AC3/AAC/DTS/E-AC3) are copied
+    untouched — so nothing already-compressed is degraded.
+    """
+    if not transcode_lossless or not probe.audio:
+        return ["-c:a", "copy"]
+    args: list[str] = []
+    for i, tr in enumerate(probe.audio):
+        if _is_lossless_audio(tr):
+            args += [f"-c:a:{i}", "libopus", f"-b:a:{i}", f"{_opus_bitrate_k(tr.channels)}k"]
+            if (tr.channels or 2) > 2:
+                args += [f"-mapping_family:a:{i}", "1"]  # required for surround in libopus
+        else:
+            args += [f"-c:a:{i}", "copy"]
+    return args
+
+
 def color_args(probe: ProbeResult) -> list[str]:
     """Carry source colour metadata over to the output (matters for HDR10)."""
     args: list[str] = []
@@ -62,12 +110,15 @@ def build_encode_command(
     x265_params: str = DEFAULT_X265_PARAMS,
     svtav1_params: str = DEFAULT_SVTAV1_PARAMS,
     title: str | None = None,
+    transcode_lossless_audio: bool = False,
     progress_to_stdout: bool = True,
 ) -> list[str]:
     """Return the full ffmpeg argument list for one re-encode.
 
-    Resolution is preserved. All audio/subtitles/attachments/chapters are kept;
-    audio is stream-copied. Output is always MKV.
+    Resolution is preserved. All audio/subtitles/attachments/chapters are kept.
+    Audio is stream-copied by default; when ``transcode_lossless_audio`` is set,
+    lossless tracks are re-encoded to Opus (lossy tracks stay copied). Output is
+    always MKV.
 
     The re-encoded video stream's stale source statistics tags (BPS, DURATION,
     NUMBER_OF_BYTES…) are dropped so the metadata matches the new encode; the
@@ -118,7 +169,8 @@ def build_encode_command(
         raise ValueError(f"unsupported codec: {codec}")
 
     args += color_args(probe)
-    args += ["-c:a", "copy", "-c:s", "copy", "-c:t", "copy"]
+    args += audio_codec_args(probe, transcode_lossless=transcode_lossless_audio)
+    args += ["-c:s", "copy", "-c:t", "copy"]
     args += subtitle_codec_overrides(probe)
 
     if progress_to_stdout:

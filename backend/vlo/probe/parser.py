@@ -115,6 +115,7 @@ def parse_probe(data: dict[str, Any], path: str, size_bytes: int) -> ProbeResult
                     language=_lang(st),
                     title=_title(st),
                     bitrate_bps=_stream_bitrate(st),
+                    profile=st.get("profile"),
                 )
             )
         elif kind == "subtitle":

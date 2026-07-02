@@ -20,6 +20,7 @@ class AudioTrack:
     language: str | None = None
     title: str | None = None
     bitrate_bps: int | None = None
+    profile: str | None = None  # ffprobe profile, e.g. "DTS-HD MA" (lossless) vs "DTS"
 
 
 @dataclass(slots=True)

@@ -31,6 +31,7 @@ def _mkv_two_audio():
                 "index": 1,
                 "codec_type": "audio",
                 "codec_name": "dts",
+                "profile": "DTS-HD MA",
                 "channels": 6,
                 "tags": {"language": "fre", "BPS-eng": "1536000"},
             },
@@ -61,6 +62,7 @@ def test_parse_basic_mkv():
     assert p.n_audio == 2
     assert p.n_subs == 1
     assert p.audio[0].language == "fre"
+    assert p.audio[0].profile == "DTS-HD MA"  # captured for lossless detection
     assert p.audio[0].bitrate_bps == 1_536_000  # from BPS-eng tag
     assert p.audio[1].bitrate_bps == 640_000
     assert p.subs[0].codec == "hdmv_pgs_subtitle"

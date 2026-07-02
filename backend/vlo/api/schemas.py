@@ -59,6 +59,7 @@ class SettingsUpdate(BaseModel):
     max_parallel_encodes: int | None = None
     filename_tag: str | None = None
     rewrite_codec_tags: bool | None = None
+    audio_lossless_to_opus: bool | None = None
 
 
 # --- exclusion categorisation ------------------------------------------

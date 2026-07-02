@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from vlo.core.enums import Codec
-from vlo.core.models import ProbeResult, SubTrack
+from vlo.core.models import AudioTrack, ProbeResult, SubTrack
 from vlo.encode.ffmpeg_cmd import (
     PIX_FMT_10BIT,
     build_encode_command,
@@ -107,6 +107,56 @@ def test_no_title_override_by_default():
     )
     # Without an explicit title, we don't add a global -metadata title= override.
     assert "title=" not in " ".join(args)
+
+
+def _with_audio(probe, tracks):
+    probe.audio = tracks
+    return probe
+
+
+def test_audio_stream_copied_by_default():
+    probe = _with_audio(make_probe(), [AudioTrack(index=0, codec="truehd", channels=8)])
+    args = build_encode_command(
+        ffmpeg_bin="ffmpeg", input_path="in.mkv", output_path="out.mkv",
+        codec=Codec.X265, crf=20, preset="slow", probe=probe,
+    )
+    assert _adjacent(args, "-c:a") == "copy"
+    assert "libopus" not in args
+
+
+def test_lossless_audio_transcoded_to_opus_lossy_copied():
+    probe = _with_audio(make_probe(), [
+        AudioTrack(index=0, codec="truehd", channels=8),   # lossless 7.1 -> opus 448k
+        AudioTrack(index=1, codec="ac3", channels=6),      # already lossy -> copy
+        AudioTrack(index=2, codec="flac", channels=2),     # lossless stereo -> opus 160k
+    ])
+    args = build_encode_command(
+        ffmpeg_bin="ffmpeg", input_path="in.mkv", output_path="out.mkv",
+        codec=Codec.X265, crf=20, preset="slow", probe=probe,
+        transcode_lossless_audio=True,
+    )
+    assert "-c:a" not in args  # no blanket copy; per-stream instead
+    assert _adjacent(args, "-c:a:0") == "libopus"
+    assert _adjacent(args, "-b:a:0") == "448k"
+    assert _adjacent(args, "-mapping_family:a:0") == "1"  # surround needs it
+    assert _adjacent(args, "-c:a:1") == "copy"            # ac3 untouched
+    assert _adjacent(args, "-c:a:2") == "libopus"
+    assert _adjacent(args, "-b:a:2") == "160k"
+    assert "-mapping_family:a:2" not in args               # stereo: no surround mapping
+
+
+def test_dts_hd_ma_is_lossless_but_plain_dts_is_copied():
+    probe = _with_audio(make_probe(), [
+        AudioTrack(index=0, codec="dts", channels=8, profile="DTS-HD MA"),
+        AudioTrack(index=1, codec="dts", channels=6, profile="DTS"),
+    ])
+    args = build_encode_command(
+        ffmpeg_bin="ffmpeg", input_path="in.mkv", output_path="out.mkv",
+        codec=Codec.X265, crf=20, preset="slow", probe=probe,
+        transcode_lossless_audio=True,
+    )
+    assert _adjacent(args, "-c:a:0") == "libopus"  # DTS-HD Master Audio (lossless)
+    assert _adjacent(args, "-c:a:1") == "copy"     # plain DTS (lossy) kept as-is
 
 
 def test_color_metadata_preserved_for_hdr():

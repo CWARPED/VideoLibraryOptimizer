@@ -113,6 +113,11 @@ class JobManager:
         except (TypeError, ValueError):
             return 1
 
+    def _audio_transcode_enabled(self) -> bool:
+        return bool(self._cfg_repo.get(
+            "audio_lossless_to_opus", self._settings.audio_lossless_to_opus
+        ))
+
     def _naming_settings(self) -> tuple[str, bool]:
         tag = self._cfg_repo.get("filename_tag", self._settings.filename_tag) or ""
         rewrite = self._cfg_repo.get("rewrite_codec_tags", self._settings.rewrite_codec_tags)
@@ -484,6 +489,7 @@ class JobManager:
             preset=job.preset,
             probe=src_probe,
             title=title,
+            transcode_lossless_audio=self._audio_transcode_enabled(),
             **self._codec_param_kwarg(job.codec, params),
         )
         self._set_state(job.id, JobState.ENCODING, out_path_local=str(out_local))

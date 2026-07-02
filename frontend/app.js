@@ -859,6 +859,7 @@ async function renderSettings() {
           <input type="text" id="set-tag" value="${esc(enc.filename_tag || "")}" placeholder=" x265"></label>
       </div>
       <label class="muted"><input type="checkbox" id="set-rw" ${enc.rewrite_codec_tags ? "checked" : ""}> Réécrire les tokens de codec dans le nom/titre (x264→x265…) — sans effet sur les noms Radarr propres</label>
+      <label class="muted"><input type="checkbox" id="set-audio-opus" ${enc.audio_lossless_to_opus ? "checked" : ""}> Compresser l'audio lossless (TrueHD/DTS-HD MA/PCM/FLAC → Opus, transparent) — les pistes déjà compressées (AC3/AAC/DTS) restent intactes</label>
       <div class="row" style="margin-top:14px"><button class="btn" id="set-enc-save">Enregistrer</button>
       <span class="muted">⚠️ Si Radarr/Sonarr gère tes noms, il peut renommer après coup. Métadonnées vidéo (débit) corrigées automatiquement à chaque encode.</span></div>
     </div>
@@ -946,6 +947,7 @@ async function renderSettings() {
         max_parallel_encodes: Number.isFinite(par) && par > 0 ? par : 1,
         filename_tag: document.getElementById("set-tag").value,
         rewrite_codec_tags: document.getElementById("set-rw").checked,
+        audio_lossless_to_opus: document.getElementById("set-audio-opus").checked,
       })});
       toast("Réglages d'encodage enregistrés");
     } catch (e) { toast(e.message, true); }
