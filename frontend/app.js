@@ -1199,6 +1199,7 @@ function renderQueue() {
   const jobs = [...state.jobs].reverse();
   const nTerminal = jobs.filter(j => TERMINAL_STATES.includes(j.state)).length;
   const nStoppable = jobs.filter(j => STOPPABLE_STATES.includes(j.state)).length;
+  const nAwaiting = jobs.filter(j => j.state === "AWAITING_CONFIRMATION").length;
   const paused = state.queuePaused;
   const banner = paused
     ? `<div class="chip warn" style="margin-bottom:12px">⏸ File en pause — aucun nouveau job ne démarre tant que tu n'as pas repris.</div>`
@@ -1207,6 +1208,7 @@ function renderQueue() {
     <div class="row" style="justify-content:space-between;margin-bottom:14px">
       <h2 style="margin:0">File d'attente</h2>
       <div class="row">
+        <button class="btn good sm" id="q-confirm-all" ${nAwaiting === 0 ? "disabled" : ""}>✓ Tout valider${nAwaiting ? ` (${nAwaiting})` : ""}</button>
         <button class="btn ghost sm" id="q-pause-all" ${paused || nStoppable === 0 ? "disabled" : ""}>⏸ Tout mettre en pause</button>
         <button class="btn good sm" id="q-resume-all" ${paused ? "" : "disabled"}>▶ Tout reprendre</button>
         <button class="btn bad sm" id="q-stop-all" ${nStoppable === 0 ? "disabled" : ""}>⏹ Tout arrêter</button>
@@ -1222,6 +1224,7 @@ function renderQueue() {
     try { await api(url, { method: "POST" }); toast(msg); fetchJobs(); }
     catch (e) { toast(e.message, true); }
   };
+  onClick("q-confirm-all", confirmAllJobs);
   onClick("q-pause-all", () => bulk("/api/jobs/pause-all", "File en pause (jobs en cours et à venir)"));
   onClick("q-resume-all", () => bulk("/api/jobs/resume-all", "File relancée"));
   onClick("q-stop-all", () => {
@@ -1243,6 +1246,23 @@ function renderQueue() {
     const del = root.querySelector("[data-del]");
     if (del) del.addEventListener("click", () => deleteJob(j.id));
   });
+}
+async function confirmAllJobs() {
+  // Snapshot the ids up front: each confirm mutates state.jobs via fetchJobs/WS.
+  const ids = state.jobs.filter(j => j.state === "AWAITING_CONFIRMATION").map(j => j.id);
+  if (ids.length === 0) return;
+  if (!confirm(`Valider et remplacer ${ids.length} fichier(s) ?\nChaque original sera remplacé par sa version réencodée. Les remplacements se font l'un après l'autre.`)) return;
+  const btn = document.getElementById("q-confirm-all");
+  if (btn) { btn.disabled = true; btn.textContent = `Validation… (0/${ids.length})`; }
+  let ok = 0, fail = 0;
+  // Sequential: each confirm triggers a copy-back + in-place replace (I/O heavy).
+  for (const id of ids) {
+    try { await api(`/api/jobs/${id}/confirm`, { method: "POST" }); ok++; }
+    catch (_) { fail++; }
+    if (btn) btn.textContent = `Validation… (${ok + fail}/${ids.length})`;
+  }
+  toast(fail ? `${ok} validé(s), ${fail} en échec` : `${ok} fichier(s) remplacé(s)`, fail > 0);
+  fetchJobs();
 }
 async function deleteJob(id) {
   try {
