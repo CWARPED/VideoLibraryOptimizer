@@ -124,6 +124,9 @@ class JobManager:
             "audio_lossless_to_opus", self._settings.audio_lossless_to_opus
         ))
 
+    def _av1_8bit_enabled(self) -> bool:
+        return bool(self._cfg_repo.get("av1_8bit", self._settings.av1_8bit))
+
     def _naming_settings(self) -> tuple[str, bool]:
         tag = self._cfg_repo.get("filename_tag", self._settings.filename_tag) or ""
         rewrite = self._cfg_repo.get("rewrite_codec_tags", self._settings.rewrite_codec_tags)
@@ -511,6 +514,7 @@ class JobManager:
             probe=src_probe,
             title=title,
             transcode_lossless_audio=self._audio_transcode_enabled(),
+            av1_8bit=self._av1_8bit_enabled(),
             **self._codec_param_kwarg(job.codec, params),
         )
         self._set_state(job.id, JobState.ENCODING, out_path_local=str(out_local))

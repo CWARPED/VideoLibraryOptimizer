@@ -60,6 +60,7 @@ class SettingsUpdate(BaseModel):
     filename_tag: str | None = None
     rewrite_codec_tags: bool | None = None
     audio_lossless_to_opus: bool | None = None
+    av1_8bit: bool | None = None
 
 
 # --- exclusion categorisation ------------------------------------------

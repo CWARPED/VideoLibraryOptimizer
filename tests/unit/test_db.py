@@ -20,8 +20,8 @@ def test_fresh_db_uses_widened_av1_ladder(tmp_path):
         rows = {r["name"]: r["crf_av1"] for r in db.conn.execute(
             "SELECT name, crf_av1 FROM encode_profile")}
         assert rows["Balanced"] == 30
-        assert rows["Compact"] == 38
-        assert rows["Mini"] == 46
+        assert rows["Compact"] == 36
+        assert rows["Mini"] == 42
     finally:
         db.close()
 
@@ -38,12 +38,12 @@ def test_migration_widens_old_av1_ladder_but_keeps_user_edits(tmp_path):
     finally:
         db.close()
 
-    db2 = Database(path)  # re-open -> data migration runs (old_version 3 < 4)
+    db2 = Database(path)  # re-open -> data migrations run (old_version 3 < 4 and < 5)
     try:
         rows = {r["name"]: r["crf_av1"] for r in db2.conn.execute(
             "SELECT name, crf_av1 FROM encode_profile")}
-        assert rows["Compact"] == 38   # old default bumped
-        assert rows["Mini"] == 40      # user edit (not old default) preserved
+        assert rows["Compact"] == 36   # 34 -> 38 (v4) -> 36 (v5)
+        assert rows["Mini"] == 40       # user edit (never an old default) preserved
     finally:
         db2.close()
 

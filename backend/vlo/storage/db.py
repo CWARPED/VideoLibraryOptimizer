@@ -11,7 +11,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -150,8 +150,8 @@ _DEFAULT_PROFILES: list[tuple[str, int, int, str, int, float, float]] = [
     ("Archive", 18, 24, "slow", 4, 0.0, 0.0),
     ("Light", 20, 28, "slow", 6, 0.0, 0.0),
     ("Balanced", 22, 30, "slow", 6, 0.0, 0.0),
-    ("Compact", 26, 38, "slow", 6, 0.0, 0.0),
-    ("Mini", 28, 46, "slow", 6, 0.0, 0.0),
+    ("Compact", 26, 36, "slow", 6, 0.0, 0.0),
+    ("Mini", 28, 42, "slow", 6, 0.0, 0.0),
 ]
 
 
@@ -215,6 +215,15 @@ class Database:
             )
             self._conn.execute(
                 "UPDATE encode_profile SET crf_av1 = 46 WHERE name = 'Mini' AND crf_av1 = 36"
+            )
+        # v5: CRF 46/38 proved too aggressive (visible AV1 artefacts); soften the
+        # compressed tiers to still-strong but watchable values.
+        if old_version < 5:
+            self._conn.execute(
+                "UPDATE encode_profile SET crf_av1 = 36 WHERE name = 'Compact' AND crf_av1 = 38"
+            )
+            self._conn.execute(
+                "UPDATE encode_profile SET crf_av1 = 42 WHERE name = 'Mini' AND crf_av1 = 46"
             )
 
     def _has_column(self, table: str, column: str) -> bool:

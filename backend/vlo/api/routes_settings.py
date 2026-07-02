@@ -22,7 +22,7 @@ _SCORING_KEYS = (
 _KV_KEYS = (
     "tmdb_api_key", "tmdb_enabled", "animation_keywords",
     "max_parallel_encodes", "filename_tag", "rewrite_codec_tags",
-    "audio_lossless_to_opus",
+    "audio_lossless_to_opus", "av1_8bit",
 )
 
 
@@ -60,6 +60,7 @@ async def get_settings_endpoint(request: Request):
             "audio_lossless_to_opus": repo.get(
                 "audio_lossless_to_opus", s.audio_lossless_to_opus
             ),
+            "av1_8bit": repo.get("av1_8bit", s.av1_8bit),
         },
         "work_dir": repo.get("work_dir", str(s.work_dir)),
         "duration_tolerance_pct": s.duration_tolerance_pct,

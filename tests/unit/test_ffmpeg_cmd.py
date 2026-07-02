@@ -5,6 +5,7 @@ from __future__ import annotations
 from vlo.core.enums import Codec
 from vlo.core.models import AudioTrack, ProbeResult, SubTrack
 from vlo.encode.ffmpeg_cmd import (
+    PIX_FMT_8BIT,
     PIX_FMT_10BIT,
     build_encode_command,
     gop_for_fps,
@@ -62,10 +63,24 @@ def test_svtav1_command_core_flags():
         codec=Codec.SVTAV1, crf=28, preset="6", probe=make_probe(fps=25.0),
     )
     assert _adjacent(args, "-c:v") == "libsvtav1"
-    assert _adjacent(args, "-pix_fmt") == PIX_FMT_10BIT
+    assert _adjacent(args, "-pix_fmt") == PIX_FMT_10BIT  # 10-bit by default
     assert _adjacent(args, "-preset") == "6"
     assert _adjacent(args, "-g") == "250"  # 25fps * 10s
     assert "-svtav1-params" in args
+
+
+def test_svtav1_8bit_option():
+    args = build_encode_command(
+        ffmpeg_bin="ffmpeg", input_path="in.mkv", output_path="out.mkv",
+        codec=Codec.SVTAV1, crf=28, preset="6", probe=make_probe(), av1_8bit=True,
+    )
+    assert _adjacent(args, "-pix_fmt") == PIX_FMT_8BIT
+    # x265 keeps 10-bit regardless of the AV1-only toggle.
+    x265 = build_encode_command(
+        ffmpeg_bin="ffmpeg", input_path="in.mkv", output_path="out.mkv",
+        codec=Codec.X265, crf=20, preset="slow", probe=make_probe(), av1_8bit=True,
+    )
+    assert _adjacent(x265, "-pix_fmt") == PIX_FMT_10BIT
 
 
 def test_mov_text_subtitle_transcoded_to_srt():
