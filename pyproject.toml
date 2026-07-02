@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "videolibraryoptimizer"
-version = "0.1.0"
+version = "0.1.5"
 description = "Scan a video library, rank heavy files by re-encode priority, and re-encode them (quality-focused, lightweight) safely."
 readme = "README.md"
 requires-python = ">=3.11"
