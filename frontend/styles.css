@@ -113,10 +113,23 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .bigprogress > span { display:block; height:100%; background: linear-gradient(90deg,var(--accent-2),var(--accent)); }
 .bigprogress > em { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-style:normal; font-size:12px; }
 
-.job { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; margin-bottom: 12px; background: var(--panel); }
-.job .head { display:flex; justify-content: space-between; align-items:center; gap: 10px; margin-bottom: 8px; }
+.job { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 7px; background: var(--panel); }
+.job .head { display:flex; justify-content: space-between; align-items:center; gap: 10px; margin-bottom: 5px; }
 .job .name { font-weight: 500; word-break: break-all; }
 .job .meta { color: var(--muted); font-size: 12px; }
+
+/* Series/season grouping in the queue */
+.job-group { border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 7px; background: var(--panel); overflow: hidden; }
+.job-group-head { display: flex; align-items: center; gap: 10px; padding: 9px 12px; cursor: pointer; user-select: none; }
+.job-group-head:hover { background: var(--panel-2); }
+.job-group .chev { color: var(--muted); width: 12px; text-align: center; flex: 0 0 12px; }
+.job-group-title { font-weight: 600; word-break: break-all; }
+.job-group-count { font-size: 12px; }
+.job-group-chips { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+.job-group-body { padding: 8px 10px; background: var(--bg); }
+.job-group-body .job { margin-bottom: 6px; background: var(--panel); }
+.job-group-body .job:last-child { margin-bottom: 0; }
+.job-group.collapsed .job-group-head { border-bottom: 0; }
 .state { font-size: 11px; padding: 3px 9px; border-radius: 999px; text-transform: uppercase; letter-spacing:.04em; }
 .state.ENCODING { background: rgba(91,140,255,.2); color: var(--accent); }
 .state.QUEUED { background: var(--chip); color: var(--muted); }

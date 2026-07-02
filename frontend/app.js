@@ -51,6 +51,7 @@ const state = {
   openSeries: null,      // {slug, ...} detail
   jobs: [],
   queuePaused: false,    // global queue pause (no new jobs start)
+  queueCollapsed: new Set(), // series/season group keys folded in the queue
   selMovies: new Set(),
   selEpisodes: new Set(), // episode file ids selected in the open series
   movieSort: { key: "score", dir: "desc" },
@@ -1195,11 +1196,69 @@ function renderMap() {
 // ---------- QUEUE ----------
 const TERMINAL_STATES = ["DONE", "REJECTED", "CANCELLED", "FAILED"];
 const STOPPABLE_STATES = ["QUEUED", "COPYING_IN", "READY", "ENCODING", "PAUSED"];
+
+// Derive series + season + episode from a filename ("Series - S04E05 - Title",
+// "Series.Name.S01E02", "Series 1x04"). Returns null for movies / no match.
+function parseEpisode(filename) {
+  const name = filename || "";
+  let m = name.match(/^(.*?)[ ._\-]+s(\d{1,3})e(\d{1,4})/i);
+  if (!m) m = name.match(/^(.*?)[ ._\-]+(\d{1,2})x(\d{1,3})/i);
+  if (!m) return null;
+  const series = m[1].replace(/[._]+/g, " ").replace(/[\s\-]+$/, "").trim();
+  if (!series) return null;
+  return { series, season: parseInt(m[2], 10), episode: parseInt(m[3], 10) };
+}
+function episodeGroupKey(ep) { return `${ep.series.toLowerCase()}|${ep.season}`; }
+
+// Group keys (series+season) that hold >=2 queued jobs -> worth a foldable header.
+function queueGroupKeys() {
+  const counts = new Map();
+  for (const j of state.jobs) {
+    const ep = parseEpisode(j.filename);
+    if (!ep) continue;
+    const k = episodeGroupKey(ep);
+    counts.set(k, (counts.get(k) || 0) + 1);
+  }
+  return [...counts.entries()].filter(([, n]) => n >= 2).map(([k]) => k);
+}
+
+function groupCard(g) {
+  const collapsed = state.queueCollapsed.has(g.key);
+  const jobsArr = g.jobs.slice().sort((a, b) => a.episode - b.episode).map(e => e.job);
+  const n = jobsArr.length;
+  const cnt = states => jobsArr.filter(j => states.includes(j.state)).length;
+  const nAwait = cnt(["AWAITING_CONFIRMATION"]);
+  const nActive = cnt(["QUEUED", "COPYING_IN", "READY", "ENCODING", "PAUSED", "VALIDATING", "COPYING_BACK", "REPLACING"]);
+  const nDone = cnt(["DONE"]);
+  const nFail = cnt(["FAILED", "REJECTED", "CANCELLED"]);
+  const gain = jobsArr.filter(j => j.state === "DONE").reduce((s, j) => s + (j.gain_bytes || 0), 0);
+  const chips = [
+    nActive ? `<span class="chip">${nActive} en cours</span>` : "",
+    nAwait ? `<span class="chip warn">${nAwait} à valider</span>` : "",
+    nDone ? `<span class="chip good">${nDone} terminé${nDone > 1 ? "s" : ""}</span>` : "",
+    nFail ? `<span class="chip bad">${nFail} échec${nFail > 1 ? "s" : ""}</span>` : "",
+  ].join("");
+  const body = collapsed ? "" : `<div class="job-group-body">${jobsArr.map(jobCard).join("")}</div>`;
+  return `<div class="job-group ${collapsed ? "collapsed" : ""}">
+    <div class="job-group-head" data-group="${esc(g.key)}">
+      <span class="chev">${collapsed ? "▸" : "▾"}</span>
+      <div class="job-group-title">${esc(g.series)} <span class="muted">— Saison ${g.season}</span></div>
+      <span class="muted job-group-count">${n} épisode${n > 1 ? "s" : ""}</span>
+      <div class="job-group-chips">${chips}</div>
+      ${nAwait ? `<button class="btn good sm" data-group-confirm="${esc(g.key)}">✓ Valider (${nAwait})</button>` : ""}
+      ${gain ? `<span class="muted">gain ${fmtBytes(gain)}</span>` : ""}
+    </div>
+    ${body}
+  </div>`;
+}
+
 function renderQueue() {
   const jobs = [...state.jobs].reverse();
   const nTerminal = jobs.filter(j => TERMINAL_STATES.includes(j.state)).length;
   const nStoppable = jobs.filter(j => STOPPABLE_STATES.includes(j.state)).length;
   const nAwaiting = jobs.filter(j => j.state === "AWAITING_CONFIRMATION").length;
+  const groupKeys = queueGroupKeys();
+  const allSeriesCollapsed = groupKeys.length > 0 && groupKeys.every(k => state.queueCollapsed.has(k));
   const paused = state.queuePaused;
   const banner = paused
     ? `<div class="chip warn" style="margin-bottom:12px">⏸ File en pause — aucun nouveau job ne démarre tant que tu n'as pas repris.</div>`
@@ -1209,6 +1268,7 @@ function renderQueue() {
       <h2 style="margin:0">File d'attente</h2>
       <div class="row">
         <button class="btn good sm" id="q-confirm-all" ${nAwaiting === 0 ? "disabled" : ""}>✓ Tout valider${nAwaiting ? ` (${nAwaiting})` : ""}</button>
+        <button class="btn ghost sm" id="q-collapse-series" ${groupKeys.length === 0 ? "disabled" : ""}>${allSeriesCollapsed ? "⊞ Déplier séries" : "⊟ Replier séries"}</button>
         <button class="btn ghost sm" id="q-pause-all" ${paused || nStoppable === 0 ? "disabled" : ""}>⏸ Tout mettre en pause</button>
         <button class="btn good sm" id="q-resume-all" ${paused ? "" : "disabled"}>▶ Tout reprendre</button>
         <button class="btn bad sm" id="q-stop-all" ${nStoppable === 0 ? "disabled" : ""}>⏹ Tout arrêter</button>
@@ -1217,7 +1277,27 @@ function renderQueue() {
       </div>
     </div>` + banner;
   if (jobs.length === 0) { app.innerHTML = header + `<div class="empty">Aucun job.</div>`; return; }
-  app.innerHTML = header + jobs.map(jobCard).join("");
+
+  // Group episodes of the same series+season under a foldable header; movies and
+  // lone episodes render as standalone cards. Order follows the newest-first list.
+  const order = [];
+  const groupMap = new Map();
+  for (const j of jobs) {
+    const ep = parseEpisode(j.filename);
+    const key = ep ? episodeGroupKey(ep) : null;
+    if (key) {
+      let g = groupMap.get(key);
+      if (!g) { g = { key, series: ep.series, season: ep.season, jobs: [] }; groupMap.set(key, g); order.push({ group: g }); }
+      g.jobs.push({ job: j, episode: ep.episode });
+    } else {
+      order.push({ job: j });
+    }
+  }
+  const bodyHtml = order.map(item => {
+    if (item.job) return jobCard(item.job);
+    return item.group.jobs.length === 1 ? jobCard(item.group.jobs[0].job) : groupCard(item.group);
+  }).join("");
+  app.innerHTML = header + bodyHtml;
 
   const onClick = (id, fn) => { const b = document.getElementById(id); if (b) b.addEventListener("click", fn); };
   const bulk = async (url, msg) => {
@@ -1225,6 +1305,13 @@ function renderQueue() {
     catch (e) { toast(e.message, true); }
   };
   onClick("q-confirm-all", confirmAllJobs);
+  onClick("q-collapse-series", () => {
+    const keys = queueGroupKeys();
+    const allCol = keys.length > 0 && keys.every(k => state.queueCollapsed.has(k));
+    if (allCol) keys.forEach(k => state.queueCollapsed.delete(k));
+    else keys.forEach(k => state.queueCollapsed.add(k));
+    renderQueue();
+  });
   onClick("q-pause-all", () => bulk("/api/jobs/pause-all", "File en pause (jobs en cours et à venir)"));
   onClick("q-resume-all", () => bulk("/api/jobs/resume-all", "File relancée"));
   onClick("q-stop-all", () => {
@@ -1246,23 +1333,43 @@ function renderQueue() {
     const del = root.querySelector("[data-del]");
     if (del) del.addEventListener("click", () => deleteJob(j.id));
   });
+  // Series/season group headers: toggle fold; the confirm button acts on the group.
+  document.querySelectorAll("[data-group]").forEach(h => h.addEventListener("click", () => {
+    const key = h.getAttribute("data-group");
+    if (state.queueCollapsed.has(key)) state.queueCollapsed.delete(key); else state.queueCollapsed.add(key);
+    renderQueue();
+  }));
+  document.querySelectorAll("[data-group-confirm]").forEach(b => b.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    confirmGroup(b.getAttribute("data-group-confirm"));
+  }));
 }
-async function confirmAllJobs() {
-  // Snapshot the ids up front: each confirm mutates state.jobs via fetchJobs/WS.
-  const ids = state.jobs.filter(j => j.state === "AWAITING_CONFIRMATION").map(j => j.id);
-  if (ids.length === 0) return;
-  if (!confirm(`Valider et remplacer ${ids.length} fichier(s) ?\nChaque original sera remplacé par sa version réencodée. Les remplacements se font l'un après l'autre.`)) return;
-  const btn = document.getElementById("q-confirm-all");
-  if (btn) { btn.disabled = true; btn.textContent = `Validation… (0/${ids.length})`; }
+// Sequential confirm: each triggers a copy-back + in-place replace (I/O heavy),
+// so we never fire them in parallel.
+async function confirmSeq(ids) {
   let ok = 0, fail = 0;
-  // Sequential: each confirm triggers a copy-back + in-place replace (I/O heavy).
   for (const id of ids) {
     try { await api(`/api/jobs/${id}/confirm`, { method: "POST" }); ok++; }
     catch (_) { fail++; }
-    if (btn) btn.textContent = `Validation… (${ok + fail}/${ids.length})`;
   }
   toast(fail ? `${ok} validé(s), ${fail} en échec` : `${ok} fichier(s) remplacé(s)`, fail > 0);
   fetchJobs();
+}
+async function confirmAllJobs() {
+  const ids = state.jobs.filter(j => j.state === "AWAITING_CONFIRMATION").map(j => j.id);
+  if (!ids.length) return;
+  if (!confirm(`Valider et remplacer ${ids.length} fichier(s) ?\nChaque original sera remplacé par sa version réencodée. Les remplacements se font l'un après l'autre.`)) return;
+  await confirmSeq(ids);
+}
+async function confirmGroup(key) {
+  const ids = state.jobs.filter(j => {
+    if (j.state !== "AWAITING_CONFIRMATION") return false;
+    const ep = parseEpisode(j.filename);
+    return ep && episodeGroupKey(ep) === key;
+  }).map(j => j.id);
+  if (!ids.length) return;
+  if (!confirm(`Valider et remplacer ${ids.length} épisode(s) de cette saison ?`)) return;
+  await confirmSeq(ids);
 }
 async function deleteJob(id) {
   try {
