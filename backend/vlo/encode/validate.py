@@ -47,6 +47,7 @@ def validate_output(
     is_vfr: bool = False,
     decoded_ok: bool = True,
     eight_bit: bool = False,
+    audio_end_s: float | None = None,
 ) -> ValidationReport:
     """Compare a source probe to its re-encoded output probe.
 
@@ -100,6 +101,16 @@ def validate_output(
         "pixel_format", pix_ok,
         f"expected {'8-bit' if eight_bit else '10-bit'}, got={out.pix_fmt}",
     ))
+
+    # 7) Audio reaches the full duration (catches a truncated audio track, e.g.
+    #    a transcode that stopped mid-file while the video ran to the end).
+    if audio_end_s is not None and out.n_audio > 0 and out.duration_s > 0:
+        tol_s = max(5.0, out.duration_s * 0.02)
+        audio_ok = audio_end_s >= out.duration_s - tol_s
+        checks.append(Check(
+            "audio_complete", audio_ok,
+            f"audio ends at {audio_end_s:.0f}s / {out.duration_s:.0f}s (tol {tol_s:.0f}s)",
+        ))
 
     ok = all(c.passed for c in checks)
     return ValidationReport(

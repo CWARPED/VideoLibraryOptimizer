@@ -79,7 +79,11 @@ async def _decode_ok(_bin, _path):
     return True
 
 
-def _build(tmp_path: Path, db, runner, *, decode=_decode_ok, n_subs_out=1):
+async def _audio_end_full(_bin, _path):
+    return 1e9  # audio reaches the full duration (never the truncation-fail path)
+
+
+def _build(tmp_path: Path, db, runner, *, decode=_decode_ok, audio_end=_audio_end_full, n_subs_out=1):
     settings = Settings(
         db_path=tmp_path / "x.db",
         work_dir=tmp_path / "work",
@@ -96,7 +100,7 @@ def _build(tmp_path: Path, db, runner, *, decode=_decode_ok, n_subs_out=1):
     mgr = JobManager(
         settings=settings, jobs_repo=jobs_repo, scan_repo=scan_repo, settings_repo=cfg_repo,
         broadcaster=bus, probe_path=probe_path, runner=runner, decode_check=decode,
-        now_fn=lambda: 1234.0,
+        audio_end_check=audio_end, now_fn=lambda: 1234.0,
     )
     return mgr, jobs_repo, scan_repo
 

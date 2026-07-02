@@ -97,6 +97,23 @@ def test_8bit_output_passes_when_8bit_requested():
     assert any(c.name == "pixel_format" and not c.passed for c in r2.checks)
 
 
+def test_truncated_audio_fails():
+    """Regression: audio that stops mid-file (e.g. Opus transcode truncated) while
+    the video runs to the end must fail validation, not be silently confirmed."""
+    src = make_probe(duration=6000.0, vcodec="h264", pix_fmt="yuv420p", size=8_000_000_000)
+    out = make_probe(duration=6000.0, size=4_000_000_000)
+    # Audio ends at 1700s of a 6000s file -> truncated.
+    bad = validate_output(src, out, codec=Codec.X265, audio_end_s=1700.0)
+    assert not bad.ok
+    assert any(c.name == "audio_complete" and not c.passed for c in bad.checks)
+    # Audio reaching (within tolerance of) the end passes.
+    good = validate_output(src, out, codec=Codec.X265, audio_end_s=5990.0)
+    assert any(c.name == "audio_complete" and c.passed for c in good.checks)
+    # Not measured -> no check added (no regression for callers that don't pass it).
+    none = validate_output(src, out, codec=Codec.X265)
+    assert not any(c.name == "audio_complete" for c in none.checks)
+
+
 def test_decode_failure_fails():
     src = make_probe(vcodec="h264", pix_fmt="yuv420p", size=8_000_000_000)
     out = make_probe(size=4_000_000_000)

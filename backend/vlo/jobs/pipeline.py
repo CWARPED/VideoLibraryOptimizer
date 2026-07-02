@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 import subprocess
 import threading
 from pathlib import Path
+
+_TIME_RE = re.compile(r"time=(\d+):(\d\d):(\d\d(?:\.\d+)?)")
 
 # Chunk size for the cancellable copy (8 MiB balances syscalls vs. cancel latency).
 _COPY_CHUNK = 8 * 1024 * 1024
@@ -115,6 +118,35 @@ async def decode_check(ffmpeg_bin: str, path: Path, *, timeout: float = 1800.0) 
     """
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _decode_check_blocking, ffmpeg_bin, str(path), timeout)
+
+
+async def audio_end_seconds(ffmpeg_bin: str, path: Path, *, timeout: float = 1800.0) -> float:
+    """Decode all audio streams and return the last timestamp reached (seconds).
+
+    Used to detect a *truncated* audio track: a decode error isn't raised when
+    the audio simply stops early while the video runs to the end, so we compare
+    this against the output duration. Returns 0.0 on error/timeout.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _audio_end_blocking, ffmpeg_bin, str(path), timeout)
+
+
+def _audio_end_blocking(ffmpeg_bin: str, path: str, timeout: float) -> float:
+    args = [
+        ffmpeg_bin, "-hide_banner", "-nostdin",
+        "-i", path, "-map", "0:a?", "-f", "null", "-",
+    ]
+    try:
+        proc = subprocess.run(
+            args, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return 0.0
+    last = 0.0
+    for m in _TIME_RE.finditer(proc.stderr or ""):
+        last = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+    return last
 
 
 def _decode_check_blocking(ffmpeg_bin: str, path: str, timeout: float) -> bool:

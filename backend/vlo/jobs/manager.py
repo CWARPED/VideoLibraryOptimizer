@@ -42,6 +42,7 @@ logger = logging.getLogger("vlo.jobs")
 
 ProbePathFn = Callable[[str], ProbeResult]
 DecodeCheckFn = Callable[[str, Path], Awaitable[bool]]
+AudioEndFn = Callable[[str, Path], Awaitable[float]]
 
 
 class JobManager:
@@ -56,6 +57,7 @@ class JobManager:
         probe_path: ProbePathFn,
         runner: EncodeRunner | None = None,
         decode_check: DecodeCheckFn | None = None,
+        audio_end_check: AudioEndFn | None = None,
         now_fn: Callable[[], float] | None = None,
     ) -> None:
         self._settings = settings
@@ -68,6 +70,9 @@ class JobManager:
         self._ffmpeg, self._ffprobe = settings.resolve_binaries()
         self._decode_check = decode_check or (
             lambda _bin, p: pipeline.decode_check(self._ffmpeg, p)
+        )
+        self._audio_end_check = audio_end_check or (
+            lambda _bin, p: pipeline.audio_end_seconds(self._ffmpeg, p)
         )
         import time
         self._now = now_fn or time.time
@@ -551,6 +556,7 @@ class JobManager:
         except ProbeError as exc:
             raise EncodeError(f"could not probe encoded output: {exc}") from exc
         decoded_ok = await self._decode_check(self._ffmpeg, out_local)
+        audio_end_s = await self._audio_end_check(self._ffmpeg, out_local)
         report = validate_output(
             src_probe, out_probe,
             codec=job.codec,
@@ -558,6 +564,7 @@ class JobManager:
             is_vfr=False,
             decoded_ok=decoded_ok,
             eight_bit=job.eight_bit,
+            audio_end_s=audio_end_s,
         )
         self._jobs.update(
             job.id,
