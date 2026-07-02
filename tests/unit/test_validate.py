@@ -85,6 +85,18 @@ def test_8bit_output_fails_pixel_check():
     assert any(c.name == "pixel_format" and not c.passed for c in report.checks)
 
 
+def test_8bit_output_passes_when_8bit_requested():
+    src = make_probe(vcodec="h264", pix_fmt="yuv420p", size=8_000_000_000)
+    out = make_probe(pix_fmt="yuv420p", size=4_000_000_000)  # 8-bit, as requested
+    report = validate_output(src, out, codec=Codec.X265, eight_bit=True)
+    assert report.ok
+    assert any(c.name == "pixel_format" and c.passed for c in report.checks)
+    # A 10-bit output when 8-bit was requested should now fail the check.
+    out10 = make_probe(pix_fmt="yuv420p10le", size=4_000_000_000)
+    r2 = validate_output(src, out10, codec=Codec.X265, eight_bit=True)
+    assert any(c.name == "pixel_format" and not c.passed for c in r2.checks)
+
+
 def test_decode_failure_fails():
     src = make_probe(vcodec="h264", pix_fmt="yuv420p", size=8_000_000_000)
     out = make_probe(size=4_000_000_000)

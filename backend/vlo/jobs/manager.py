@@ -557,6 +557,7 @@ class JobManager:
             duration_tolerance_pct=self._settings.duration_tolerance_pct,
             is_vfr=False,
             decoded_ok=decoded_ok,
+            eight_bit=job.eight_bit,
         )
         self._jobs.update(
             job.id,

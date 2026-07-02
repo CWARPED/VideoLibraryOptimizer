@@ -10,6 +10,7 @@ from ..core.models import ProbeResult
 
 _EXPECTED_VCODEC = {Codec.X265: "hevc", Codec.SVTAV1: "av1"}
 _TENBIT_PIX_FMTS = {"yuv420p10le", "yuv422p10le", "yuv444p10le", "p010le"}
+_EIGHTBIT_PIX_FMTS = {"yuv420p", "yuvj420p", "yuv422p", "yuv444p"}
 
 
 @dataclass(slots=True)
@@ -45,6 +46,7 @@ def validate_output(
     duration_tolerance_pct: float = 0.5,
     is_vfr: bool = False,
     decoded_ok: bool = True,
+    eight_bit: bool = False,
 ) -> ValidationReport:
     """Compare a source probe to its re-encoded output probe.
 
@@ -92,8 +94,12 @@ def validate_output(
     expected = _EXPECTED_VCODEC[codec]
     codec_ok = out.vcodec == expected
     checks.append(Check("video_codec", codec_ok, f"expected={expected} got={out.vcodec}"))
-    pix_ok = (out.pix_fmt or "") in _TENBIT_PIX_FMTS
-    checks.append(Check("pixel_format", pix_ok, f"got={out.pix_fmt}"))
+    wanted_fmts = _EIGHTBIT_PIX_FMTS if eight_bit else _TENBIT_PIX_FMTS
+    pix_ok = (out.pix_fmt or "") in wanted_fmts
+    checks.append(Check(
+        "pixel_format", pix_ok,
+        f"expected {'8-bit' if eight_bit else '10-bit'}, got={out.pix_fmt}",
+    ))
 
     ok = all(c.passed for c in checks)
     return ValidationReport(
