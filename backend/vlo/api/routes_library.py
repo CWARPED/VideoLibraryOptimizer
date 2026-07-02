@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 import time
 
-from ..core.enums import Codec
+from ..core.enums import Codec, MediaKind
 from ..core.models import MediaFile
 from ..scoring.score import compute_score
 from .common import get_state
@@ -135,6 +135,20 @@ async def list_series(
         })
     summary.sort(key=lambda s: s["est_gain_bytes"], reverse=True)
     return {"series": summary}
+
+
+@router.delete("/movies")
+async def clear_movies(request: Request):
+    """Clear the cached movie rows (files on disk are untouched; a rescan repopulates)."""
+    removed = get_state(request).scan_repo.delete_by_kind(MediaKind.MOVIE)
+    return {"ok": True, "removed": removed}
+
+
+@router.delete("/series")
+async def clear_series(request: Request):
+    """Clear the cached series/episode rows (files on disk are untouched)."""
+    removed = get_state(request).scan_repo.delete_by_kind(MediaKind.EPISODE)
+    return {"ok": True, "removed": removed}
 
 
 @router.post("/media/{file_id}/content_type")

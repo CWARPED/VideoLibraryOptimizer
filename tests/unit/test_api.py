@@ -251,6 +251,16 @@ def test_content_resolver_respects_manual_and_keyword(client):
     assert ct3 == "live_action" and src3 == "default"
 
 
+def test_clear_movies_cache_removes_movie_rows(client):
+    c, state = client
+    fid = _add_movie(state, "/lib/Wipe.mkv")
+    r = c.delete("/api/movies")
+    assert r.status_code == 200
+    assert r.json()["removed"] == 1
+    assert state.scan_repo.get_by_id(fid) is None
+    assert c.get("/api/movies").json()["movies"] == []
+
+
 def test_reencoded_not_proposed_but_indicated(client):
     c, state = client
     _add_movie(state, "/lib/Fresh.mkv")  # candidate

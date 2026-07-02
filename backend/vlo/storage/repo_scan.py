@@ -272,6 +272,39 @@ class ScanRepo:
             self._db.conn.commit()
         return removed
 
+    def delete_by_kind(self, kind: MediaKind) -> int:
+        """Delete every cached row of a kind (movies or episodes). Returns count.
+
+        Same foreign-key safety as :meth:`delete_missing`: rows still referenced
+        by a non-terminal job are kept; terminal-job history is detached first.
+        The files on disk are never touched — a rescan re-populates the cache.
+        """
+        active_states = tuple(s.value for s in JobState if not s.is_terminal)
+        placeholders = ", ".join("?" for _ in active_states)
+        with self._db.lock:
+            rows = self._db.conn.execute(
+                "SELECT id FROM media_file WHERE kind = ?", (kind.value,)
+            ).fetchall()
+            ids = [r["id"] for r in rows]
+            kept: set[int] = set()
+            if ids and active_states:
+                q = (
+                    f"SELECT DISTINCT media_file_id FROM job "
+                    f"WHERE media_file_id IS NOT NULL AND state IN ({placeholders})"
+                )
+                kept = {r["media_file_id"] for r in self._db.conn.execute(q, active_states)}
+            removed = 0
+            for fid in ids:
+                if fid in kept:
+                    continue
+                self._db.conn.execute(
+                    "UPDATE job SET media_file_id = NULL WHERE media_file_id = ?", (fid,)
+                )
+                self._db.conn.execute("DELETE FROM media_file WHERE id = ?", (fid,))
+                removed += 1
+            self._db.conn.commit()
+        return removed
+
     # --- row mapping ----------------------------------------------------
     @staticmethod
     def _row_to_media(row: Any) -> MediaFile:

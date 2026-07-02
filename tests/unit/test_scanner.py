@@ -78,6 +78,25 @@ def test_scan_probes_then_caches(tmp_path: Path, db, clock):
     assert series[0]["is_anime"] is False
 
 
+def test_delete_by_kind_clears_only_that_kind(tmp_path: Path, db, clock):
+    from vlo.core.enums import MediaKind
+
+    _make_library(tmp_path)
+    repo = ScanRepo(db)
+    ScanService(repo, _probe_ok, _score_ok, clock).scan(str(tmp_path))
+    assert len(repo.list_movies()) == 1
+    assert len(repo.list_series_summary()) == 1
+
+    # Clearing series removes only the episodes; the movie stays cached.
+    assert repo.delete_by_kind(MediaKind.EPISODE) == 2
+    assert repo.list_series_summary() == []
+    assert len(repo.list_movies()) == 1
+
+    # Clearing movies empties the rest.
+    assert repo.delete_by_kind(MediaKind.MOVIE) == 1
+    assert repo.list_movies() == []
+
+
 def test_changed_file_is_reprobed(tmp_path: Path, db, clock):
     _make_library(tmp_path)
     repo = ScanRepo(db)

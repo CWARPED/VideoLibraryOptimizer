@@ -170,6 +170,16 @@ async function loadMovies() {
 async function loadSeries() {
   state.series = (await api(`/api/series?${cp()}`)).series;
 }
+async function clearCache(kind) {
+  const label = kind === "movies" ? "films" : "séries";
+  if (!confirm(`Vider le cache ${label} ?\nLes données analysées seront supprimées. Les fichiers sur le disque ne sont PAS touchés ; un nouveau scan les régénère.`)) return;
+  try {
+    const r = await api(`/api/${kind}`, { method: "DELETE" });
+    toast(`Cache ${label} vidé (${r.removed} entrée(s))`);
+    if (kind === "movies") { state.selMovies = new Set(); await loadMovies(); renderMovies(); }
+    else { state.openSeries = null; state.selEpisodes = new Set(); await loadSeries(); renderSeries(); }
+  } catch (e) { toast(e.message, true); }
+}
 async function refreshSeriesDetail() {
   if (!state.openSeries) return;
   state.openSeries = await api(`/api/series/${encodeURIComponent(state.openSeries.slug)}?${cp()}`);
@@ -414,7 +424,10 @@ function renderMovies() {
   }).join("");
 
   app.innerHTML = `
-    <h2>Films à traiter en priorité <span class="muted">(${ms.length})</span></h2>
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <h2 style="margin:0">Films à traiter en priorité <span class="muted">(${ms.length})</span></h2>
+      <button class="btn ghost sm" id="m-clear" title="Supprimer les données analysées des films (le disque n'est pas touché)">🗑 Vider le cache films</button>
+    </div>
     ${ms.length === 0 ? `<div class="empty">Aucun film candidat. Lance un scan.</div>` : `
     <div class="panel" style="padding:0">
       <div class="table-wrap"><table>
@@ -436,6 +449,8 @@ function renderMovies() {
       <button class="btn" id="m-encode">Encoder la sélection</button>
     </div>`}`;
 
+  const mClear = document.getElementById("m-clear");
+  if (mClear) mClear.addEventListener("click", () => clearCache("movies"));
   if (ms.length === 0) return;
   bindEncodeControls();
   bindTypeBadges();
@@ -515,8 +530,11 @@ function renderSeries() {
       <td><button class="btn sm ghost">Ouvrir →</button></td>
     </tr>`).join("");
   app.innerHTML = `
-    <h2>Séries <span class="muted">(${ss.length})</span>
-      <span class="muted" style="font-weight:400;font-size:13px">— triées par gain estimé</span></h2>
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <h2 style="margin:0">Séries <span class="muted">(${ss.length})</span>
+        <span class="muted" style="font-weight:400;font-size:13px">— triées par gain estimé</span></h2>
+      <button class="btn ghost sm" id="s-clear" title="Supprimer les données analysées des séries (le disque n'est pas touché)">🗑 Vider le cache séries</button>
+    </div>
     ${ss.length === 0 ? `<div class="empty">Aucune série détectée. Lance un scan.</div>` : `
     <div class="panel" style="padding:0"><div class="table-wrap"><table>
       <thead><tr><th>Série</th>
@@ -527,6 +545,8 @@ function renderSeries() {
       <th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div></div>`}`;
+  const sClear = document.getElementById("s-clear");
+  if (sClear) sClear.addEventListener("click", () => clearCache("series"));
   app.querySelectorAll("[data-ssort]").forEach(h => h.addEventListener("click", (e) => {
     e.stopPropagation(); applySort(state.seriesSort, h.dataset.ssort, renderSeries);
   }));
