@@ -14,6 +14,40 @@ def test_fresh_db_seeds_all_default_profiles(tmp_path):
         db.close()
 
 
+def test_fresh_db_uses_widened_av1_ladder(tmp_path):
+    db = Database(tmp_path / "vlo.db")
+    try:
+        rows = {r["name"]: r["crf_av1"] for r in db.conn.execute(
+            "SELECT name, crf_av1 FROM encode_profile")}
+        assert rows["Balanced"] == 30
+        assert rows["Compact"] == 38
+        assert rows["Mini"] == 46
+    finally:
+        db.close()
+
+
+def test_migration_widens_old_av1_ladder_but_keeps_user_edits(tmp_path):
+    path = tmp_path / "vlo.db"
+    db = Database(path)
+    try:
+        # Simulate a pre-v4 install: old AV1 defaults on Compact, a user-tuned Mini.
+        db.conn.execute("UPDATE encode_profile SET crf_av1 = 34 WHERE name = 'Compact'")
+        db.conn.execute("UPDATE encode_profile SET crf_av1 = 40 WHERE name = 'Mini'")
+        db.conn.execute("UPDATE schema_version SET version = 3")
+        db.conn.commit()
+    finally:
+        db.close()
+
+    db2 = Database(path)  # re-open -> data migration runs (old_version 3 < 4)
+    try:
+        rows = {r["name"]: r["crf_av1"] for r in db2.conn.execute(
+            "SELECT name, crf_av1 FROM encode_profile")}
+        assert rows["Compact"] == 38   # old default bumped
+        assert rows["Mini"] == 40      # user edit (not old default) preserved
+    finally:
+        db2.close()
+
+
 def test_existing_db_gains_new_profiles_without_overwriting(tmp_path):
     path = tmp_path / "vlo.db"
     db = Database(path)

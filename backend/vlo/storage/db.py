@@ -11,7 +11,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -150,8 +150,8 @@ _DEFAULT_PROFILES: list[tuple[str, int, int, str, int, float, float]] = [
     ("Archive", 18, 24, "slow", 4, 0.0, 0.0),
     ("Light", 20, 28, "slow", 6, 0.0, 0.0),
     ("Balanced", 22, 30, "slow", 6, 0.0, 0.0),
-    ("Compact", 26, 34, "slow", 6, 0.0, 0.0),
-    ("Mini", 28, 36, "slow", 6, 0.0, 0.0),
+    ("Compact", 26, 38, "slow", 6, 0.0, 0.0),
+    ("Mini", 28, 46, "slow", 6, 0.0, 0.0),
 ]
 
 
@@ -193,6 +193,8 @@ class Database:
                 if not self._has_column(table, column):
                     self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
             row = self._conn.execute("SELECT version FROM schema_version").fetchone()
+            old_version = row["version"] if row is not None else 0
+            self._apply_data_migrations(old_version)
             if row is None:
                 self._conn.execute(
                     "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
@@ -200,6 +202,20 @@ class Database:
             else:
                 self._conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
             self._conn.commit()
+
+    def _apply_data_migrations(self, old_version: int) -> None:
+        """One-time data fixes keyed on the pre-existing schema version."""
+        # v4: widen the SVT-AV1 CRF ladder so the compressed tiers actually
+        # differ. AV1's CRF scale (0-63) reacts far less than x265's, so the old
+        # 34/36 barely compressed more than Balanced (30). Only touch rows still
+        # holding the old defaults, to preserve any user-edited profiles.
+        if old_version < 4:
+            self._conn.execute(
+                "UPDATE encode_profile SET crf_av1 = 38 WHERE name = 'Compact' AND crf_av1 = 34"
+            )
+            self._conn.execute(
+                "UPDATE encode_profile SET crf_av1 = 46 WHERE name = 'Mini' AND crf_av1 = 36"
+            )
 
     def _has_column(self, table: str, column: str) -> bool:
         rows = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
