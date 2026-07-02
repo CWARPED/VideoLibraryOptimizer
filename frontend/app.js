@@ -690,7 +690,7 @@ async function encodeSeriesSelection() {
 // ---------- MAP (treemap type WinDirStat) ----------
 // Palette aligned with the site variables (accent/warn/bad/good, dark panels).
 const MAP_SCORE_STOPS = [[91, 140, 255], [240, 180, 41], [240, 85, 109]]; // accent -> warn -> bad
-const MAP_GAIN_COLOR = "#3ecf8e";          // reclaimable space (site --good)
+const MAP_OUT_COLOR = "#3ecf8e";            // estimated size after compression (site --good)
 const MAP_SCORE_GRADIENT = "linear-gradient(90deg,#5b8cff,#f0b429,#f0556d)";
 const MAP_CAT_COLORS = { efficient: "#333a49", excluded: "#2a2f3d", reencoded: "#24304a" };
 const MAP_CATS = [
@@ -853,13 +853,15 @@ function mapDraw() {
     // Background of the cell = score (candidates) / neutral tone (the rest).
     ctx.fillStyle = mapFileColor(l.f);
     ctx.fillRect(l.x, l.y, l.w, l.h);
-    // Reclaimable space = a solid rectangle pinned to the bottom-right corner,
-    // its area proportional to gain/size, in a distinct colour.
-    if (l.gain > 0 && l.size > 0) {
-      const k = Math.sqrt(Math.min(1, l.gain / l.size));
-      const gw = l.w * k, gh = l.h * k;
-      ctx.fillStyle = MAP_GAIN_COLOR;
-      ctx.fillRect(l.x + l.w - gw, l.y + l.h - gh, gw, gh);
+    // Corner (bottom-right) = estimated size after compression, area
+    // proportional to est_out/size. The L-shaped remainder keeps the score
+    // colour and represents the reclaimable gain.
+    if (l.f.category === "candidate" && l.size > 0) {
+      const out = Math.max(0, l.f.est_out_bytes != null ? l.f.est_out_bytes : l.size - l.gain);
+      const k = Math.sqrt(Math.min(1, out / l.size));
+      const cw = l.w * k, ch = l.h * k;
+      ctx.fillStyle = MAP_OUT_COLOR;
+      ctx.fillRect(l.x + l.w - cw, l.y + l.h - ch, cw, ch);
     }
     ctx.strokeStyle = "rgba(0,0,0,.45)";
     ctx.lineWidth = px;
@@ -1196,8 +1198,8 @@ function mapRenderFilters() {
     ${catRows}
     <h3>Légende</h3>
     <div class="map-legend">
-      <div><span class="map-swatch" style="background:${MAP_SCORE_GRADIENT}"></span> fond = score (priorité)</div>
-      <div><span class="map-swatch" style="background:${MAP_GAIN_COLOR}"></span> coin = gain de place estimé</div>
+      <div><span class="map-swatch" style="background:${MAP_SCORE_GRADIENT}"></span> partie en L = gain (couleur = score)</div>
+      <div><span class="map-swatch" style="background:${MAP_OUT_COLOR}"></span> coin = taille estimée après compression</div>
       <div class="muted" style="font-size:12px;margin-top:6px">Aire d'un pavé = taille du fichier. Clique un dossier pour tout sélectionner.</div>
     </div>`;
 
