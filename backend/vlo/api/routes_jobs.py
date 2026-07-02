@@ -57,7 +57,10 @@ async def list_jobs(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="invalid state") from exc
     jobs = repo.list(state=js, batch_id=batch_id)
-    return {"jobs": [job_to_dict(j) for j in jobs]}
+    return {
+        "jobs": [job_to_dict(j) for j in jobs],
+        "paused": get_state(request).job_manager.is_paused(),
+    }
 
 
 @router.get("/jobs/{job_id}")

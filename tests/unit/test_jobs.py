@@ -133,6 +133,8 @@ class GatedRunner:
         self.max_concurrent = 0
 
     async def run(self, args, *, duration_s, on_progress=None, cancel_event=None, on_spawn=None):
+        if on_spawn:
+            on_spawn(999999)  # fake ffmpeg pid (lets pause/resume find it)
         self.concurrent += 1
         self.max_concurrent = max(self.max_concurrent, self.concurrent)
         out = Path(args[-1])
@@ -143,6 +145,17 @@ class GatedRunner:
         finally:
             self.concurrent -= 1
         return EncodeResult(cancelled=False, returncode=0)
+
+
+class GatedDecode:
+    """A decode-check that blocks until released, to observe validation timing."""
+
+    def __init__(self):
+        self.release = asyncio.Event()
+
+    async def __call__(self, _bin, _path):
+        await self.release.wait()
+        return True
 
 
 @pytest.mark.asyncio
@@ -452,11 +465,15 @@ async def test_cancel_ready_job_cleans_staged_copy(tmp_path, db):
     await mgr.start()
     mgr.enqueue(media, Codec.X265, "Light")
 
+    # Wait until one job is encoding and another is genuinely staged (READY and
+    # not the one just claimed for encode, which is briefly READY during probe).
     ready_id = None
     for _ in range(250):
-        ready = [j for j in jobs_repo.list() if j.state is JobState.READY]
-        if ready:
-            ready_id = ready[0].id
+        jobs = jobs_repo.list()
+        enc = [j for j in jobs if j.state is JobState.ENCODING]
+        rdy = [j for j in jobs if j.state is JobState.READY]
+        if enc and rdy:
+            ready_id = rdy[0].id
             break
         await asyncio.sleep(0.02)
     assert ready_id is not None
@@ -468,6 +485,73 @@ async def test_cancel_ready_job_cleans_staged_copy(tmp_path, db):
     assert not workdir.exists()  # staged local copy cleaned up
 
     runner.release.set()
+    await mgr.stop()
+
+
+@pytest.mark.asyncio
+async def test_validation_does_not_block_next_encode(tmp_path, db):
+    """With one encode slot, a job in validation must not hold up the next encode."""
+    SettingsRepo(db).set("max_parallel_encodes", 1)
+    gate = GatedDecode()
+    mgr, jobs_repo, scan_repo = _build(tmp_path, db, FakeRunner(out_bytes=200), decode=gate)
+    media = [_persist_media(scan_repo, _make_source(tmp_path, name=f"V{i}.mkv")) for i in range(2)]
+
+    await mgr.start()
+    mgr.enqueue(media, Codec.X265, "Light")
+
+    # Both jobs pass ffmpeg and sit in VALIDATING together: the single encode slot
+    # was freed at ffmpeg exit rather than held through the (gated) validation.
+    for _ in range(250):
+        n = len([j for j in jobs_repo.list() if j.state is JobState.VALIDATING])
+        if n == 2:
+            break
+        await asyncio.sleep(0.02)
+    assert len([j for j in jobs_repo.list() if j.state is JobState.VALIDATING]) == 2
+
+    gate.release.set()
+    for _ in range(250):
+        if len([j for j in jobs_repo.list() if j.state is JobState.AWAITING_CONFIRMATION]) == 2:
+            break
+        await asyncio.sleep(0.02)
+    assert len([j for j in jobs_repo.list() if j.state is JobState.AWAITING_CONFIRMATION]) == 2
+    await mgr.stop()
+
+
+@pytest.mark.asyncio
+async def test_pause_all_holds_future_jobs(tmp_path, db, monkeypatch):
+    """Global pause suspends the running encode AND blocks new jobs from starting."""
+    from vlo.jobs import manager as mgr_mod
+    monkeypatch.setattr(mgr_mod, "suspend_process", lambda pid: True)
+    monkeypatch.setattr(mgr_mod, "resume_process", lambda pid: True)
+
+    runner = GatedRunner()
+    mgr, jobs_repo, scan_repo = _build(tmp_path, db, runner)  # max_parallel = 2 (free slot)
+    mf1 = _persist_media(scan_repo, _make_source(tmp_path, name="H0.mkv"))
+
+    await mgr.start()
+    mgr.enqueue([mf1], Codec.X265, "Light")
+    first = jobs_repo.list()[0].id
+    await _wait_state(jobs_repo, first, JobState.ENCODING)
+
+    mgr.pause_all()
+    assert mgr.is_paused()
+    assert jobs_repo.get(first).state is JobState.PAUSED
+
+    # A brand-new job enqueued while paused stays QUEUED even though a slot is free.
+    mf2 = _persist_media(scan_repo, _make_source(tmp_path, name="H1.mkv"))
+    mgr.enqueue([mf2], Codec.X265, "Light")
+    second = next(j.id for j in jobs_repo.list() if j.id != first)
+    await asyncio.sleep(0.2)
+    assert jobs_repo.get(second).state is JobState.QUEUED  # held by the global pause
+
+    mgr.resume_all()
+    assert not mgr.is_paused()
+    runner.release.set()
+    for _ in range(250):
+        if len([j for j in jobs_repo.list() if j.state is JobState.AWAITING_CONFIRMATION]) == 2:
+            break
+        await asyncio.sleep(0.02)
+    assert len([j for j in jobs_repo.list() if j.state is JobState.AWAITING_CONFIRMATION]) == 2
     await mgr.stop()
 
 

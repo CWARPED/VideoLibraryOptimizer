@@ -50,6 +50,7 @@ const state = {
   series: [],
   openSeries: null,      // {slug, ...} detail
   jobs: [],
+  queuePaused: false,    // global queue pause (no new jobs start)
   selMovies: new Set(),
   selEpisodes: new Set(), // episode file ids selected in the open series
   movieSort: { key: "score", dir: "desc" },
@@ -105,7 +106,9 @@ function handleWS(m) {
       setStats(m.total_gain_bytes, m.total_encodes_done);
       break;
     case "queue":
+      if (typeof m.paused === "boolean") state.queuePaused = m.paused;
       refreshQueueBadge(m);
+      if (state.view === "queue") render();
       break;
     case "media_updated":
       // A processed file was re-probed/re-scored -> refresh the library views.
@@ -122,7 +125,9 @@ function patchJob(id, fields) {
 }
 async function fetchJobs() {
   try {
-    state.jobs = (await api("/api/jobs")).jobs;
+    const r = await api("/api/jobs");
+    state.jobs = r.jobs;
+    state.queuePaused = !!r.paused;
     refreshQueueBadge();
     if (state.view === "queue") render();
   } catch (_) {}
@@ -619,20 +624,22 @@ const STOPPABLE_STATES = ["QUEUED", "COPYING_IN", "READY", "ENCODING", "PAUSED"]
 function renderQueue() {
   const jobs = [...state.jobs].reverse();
   const nTerminal = jobs.filter(j => TERMINAL_STATES.includes(j.state)).length;
-  const nEncoding = jobs.filter(j => j.state === "ENCODING").length;
-  const nPaused = jobs.filter(j => j.state === "PAUSED").length;
   const nStoppable = jobs.filter(j => STOPPABLE_STATES.includes(j.state)).length;
+  const paused = state.queuePaused;
+  const banner = paused
+    ? `<div class="chip warn" style="margin-bottom:12px">⏸ File en pause — aucun nouveau job ne démarre tant que tu n'as pas repris.</div>`
+    : "";
   const header = `
     <div class="row" style="justify-content:space-between;margin-bottom:14px">
       <h2 style="margin:0">File d'attente</h2>
       <div class="row">
-        <button class="btn ghost sm" id="q-pause-all" ${nEncoding === 0 ? "disabled" : ""}>⏸ Tout mettre en pause</button>
-        <button class="btn good sm" id="q-resume-all" ${nPaused === 0 ? "disabled" : ""}>▶ Tout reprendre</button>
+        <button class="btn ghost sm" id="q-pause-all" ${paused || nStoppable === 0 ? "disabled" : ""}>⏸ Tout mettre en pause</button>
+        <button class="btn good sm" id="q-resume-all" ${paused ? "" : "disabled"}>▶ Tout reprendre</button>
         <button class="btn bad sm" id="q-stop-all" ${nStoppable === 0 ? "disabled" : ""}>⏹ Tout arrêter</button>
         <button class="btn ghost sm" id="q-clear" ${nTerminal === 0 ? "disabled" : ""}>
           Nettoyer (${nTerminal})</button>
       </div>
-    </div>`;
+    </div>` + banner;
   if (jobs.length === 0) { app.innerHTML = header + `<div class="empty">Aucun job.</div>`; return; }
   app.innerHTML = header + jobs.map(jobCard).join("");
 
@@ -641,8 +648,8 @@ function renderQueue() {
     try { await api(url, { method: "POST" }); toast(msg); fetchJobs(); }
     catch (e) { toast(e.message, true); }
   };
-  onClick("q-pause-all", () => bulk("/api/jobs/pause-all", "Encodages mis en pause"));
-  onClick("q-resume-all", () => bulk("/api/jobs/resume-all", "Encodages repris"));
+  onClick("q-pause-all", () => bulk("/api/jobs/pause-all", "File en pause (jobs en cours et à venir)"));
+  onClick("q-resume-all", () => bulk("/api/jobs/resume-all", "File relancée"));
   onClick("q-stop-all", () => {
     if (!confirm(`Arrêter ${nStoppable} job(s) en cours/en attente ? La progression sera perdue.`)) return;
     bulk("/api/jobs/stop-all", "Tous les jobs arrêtés");

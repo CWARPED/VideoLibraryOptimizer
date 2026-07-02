@@ -75,10 +75,14 @@ class JobManager:
         self._wake = asyncio.Event()
         self._dispatcher: asyncio.Task | None = None
         self._stopping = False
-        # Two pools: the sequential prefetch copier and the encode workers.
-        self._copying: dict[int, asyncio.Task] = {}   # job_id -> copy task (COPYING_IN)
-        self._encoding: dict[int, asyncio.Task] = {}  # job_id -> encode task (ENCODING+)
-        # A job's cancel flag spans both phases (created at copy claim).
+        # Three pools: sequential prefetch copier, encode workers (ffmpeg slots),
+        # and off-pool validators. A job moves encode -> validate freeing its
+        # encode slot the moment ffmpeg exits, so the next encode starts at once.
+        self._copying: dict[int, asyncio.Task] = {}     # job_id -> copy task (COPYING_IN)
+        self._encoding: dict[int, asyncio.Task] = {}    # job_id -> ffmpeg-phase task
+        self._validating: dict[int, asyncio.Task] = {}  # job_id -> validation task
+        self._paused = False  # global queue pause: no new work starts until resumed
+        # A job's cancel flag spans all phases (created at copy claim).
         self._cancel_events: dict[int, threading.Event] = {}
         self._pids: dict[int, int] = {}  # job_id -> ffmpeg pid (for pause/resume)
         self._last_progress: dict[int, float] = {}
@@ -96,7 +100,9 @@ class JobManager:
         self._wake.set()
         for ev in list(self._cancel_events.values()):
             ev.set()
-        for task in [*self._copying.values(), *self._encoding.values()]:
+        for task in [
+            *self._copying.values(), *self._encoding.values(), *self._validating.values(),
+        ]:
             task.cancel()
         if self._dispatcher is not None:
             self._dispatcher.cancel()
@@ -212,9 +218,9 @@ class JobManager:
         job = self._jobs.get(job_id)
         if job is None or job.state.is_terminal:
             return
-        # A job with a running copy or encode task: signal its cancel event and
-        # let the worker abort and finalise CANCELLED.
-        if job_id in self._copying or job_id in self._encoding:
+        # A job with a running copy / encode / validation task: signal its cancel
+        # event and let the worker abort and finalise CANCELLED.
+        if job_id in self._copying or job_id in self._encoding or job_id in self._validating:
             ev = self._cancel_events.get(job_id)
             if ev is not None:
                 # If suspended, resume first so the worker can observe the cancel
@@ -252,8 +258,13 @@ class JobManager:
         self._set_state(job_id, JobState.ENCODING)
 
     # --- global controls (act on every matching job at once) ------------
+    def is_paused(self) -> bool:
+        return self._paused
+
     def pause_all(self) -> int:
-        """Pause every currently-encoding job. Returns how many were paused."""
+        """Pause the whole queue: suspend running encodes AND hold all future jobs
+        (no new copy/encode starts until resumed). Returns how many were suspended."""
+        self._paused = True
         n = 0
         for job in self._jobs.list(state=JobState.ENCODING):
             try:
@@ -261,10 +272,13 @@ class JobManager:
                 n += 1
             except ValueError:
                 pass
+        self._broadcast_queue()
         return n
 
     def resume_all(self) -> int:
-        """Resume every paused job. Returns how many were resumed."""
+        """Lift the queue pause: resume suspended encodes and let work start again.
+        Returns how many suspended encodes were resumed."""
+        self._paused = False
         n = 0
         for job in self._jobs.list(state=JobState.PAUSED):
             try:
@@ -272,6 +286,8 @@ class JobManager:
                 n += 1
             except ValueError:
                 pass
+        self._wake.set()
+        self._broadcast_queue()
         return n
 
     def cancel_all(self) -> int:
@@ -296,6 +312,8 @@ class JobManager:
 
     def _fill_pools(self) -> bool:
         """Start as much work as capacity/disk allow. True if anything started."""
+        if self._paused:
+            return False  # global pause: hold every future job until resumed
         started = False
         mx = self._max_parallel()
         # Encode pool: pull staged (READY) jobs into free encode slots.
@@ -387,7 +405,10 @@ class JobManager:
 
     def _make_encode_done_cb(self, job_id: int) -> Callable[[asyncio.Task], None]:
         def cb(_task: asyncio.Task) -> None:
+            # The task spans the ffmpeg phase then validation; it removes itself
+            # from _encoding at ffmpeg exit, so clear both pools defensively.
             self._encoding.pop(job_id, None)
+            self._validating.pop(job_id, None)
             self._cancel_events.pop(job_id, None)
             self._pids.pop(job_id, None)
             self._last_progress.pop(job_id, None)
@@ -513,8 +534,15 @@ class JobManager:
         if not out_local.exists():
             raise EncodeError("encode produced no output file")
 
-        # Validate.
+        # ffmpeg is done: hand off to the (off-pool) validation phase and free the
+        # encode slot NOW so the next queued encode can start immediately instead of
+        # waiting for this output's full-decode validation.
+        self._encoding.pop(job.id, None)
+        self._validating[job.id] = asyncio.current_task()  # type: ignore[assignment]
         self._set_state(job.id, JobState.VALIDATING, progress=1.0)
+        self._wake.set()
+
+        # Validate.
         try:
             out_probe = await loop.run_in_executor(None, self._probe_path, str(out_local))
         except ProbeError as exc:
@@ -542,6 +570,11 @@ class JobManager:
                 error_message=f"validation failed: {', '.join(failed)}",
                 finished_at=self._now(),
             )
+            return
+
+        if cancel_event.is_set():  # cancelled during validation
+            self._cleanup_workdir(job)
+            self._set_state(job.id, JobState.CANCELLED, finished_at=self._now())
             return
 
         # Wait for the user. Output stays on local disk.
@@ -610,14 +643,16 @@ class JobManager:
         self._broadcast_queue()
 
     def has_active(self) -> bool:
-        """True if at least one job is currently encoding (ffmpeg binary in use)."""
-        return bool(self._encoding)
+        """True if ffmpeg is in use (encoding or full-decode validation)."""
+        return bool(self._encoding) or bool(self._validating)
 
     def _broadcast_queue(self) -> None:
         self._bus.publish({
             "type": "queue",
+            "paused": self._paused,
             "running": list(self._encoding.keys()),
             "copying": list(self._copying.keys()),
+            "validating": list(self._validating.keys()),
             "staged": [j.id for j in self._jobs.list(state=JobState.READY)],
             "queued": [j.id for j in self._jobs.list(state=JobState.QUEUED)],
             "awaiting": [j.id for j in self._jobs.list(state=JobState.AWAITING_CONFIRMATION)],
