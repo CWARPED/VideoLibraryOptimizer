@@ -118,6 +118,17 @@ def test_video_stream_stats_dropped_and_language_reapplied():
     assert _adjacent(args, "-metadata:s:v:0") == "language=fre"
 
 
+def test_interleaving_forced_for_sparse_subtitle_streams():
+    """Regression: PGS subtitles made ffmpeg misinterleave audio, so seeking the
+    output (players / Jellyfin transcode) produced little or no sound. We force
+    interleaving with -max_interleave_delta 0."""
+    args = build_encode_command(
+        ffmpeg_bin="ffmpeg", input_path="in.mkv", output_path="out.mkv",
+        codec=Codec.SVTAV1, crf=30, preset="6", probe=make_probe(),
+    )
+    assert _adjacent(args, "-max_interleave_delta") == "0"
+
+
 def test_title_override_applied():
     args = build_encode_command(
         ffmpeg_bin="ffmpeg", input_path="in.mkv", output_path="out.mkv",

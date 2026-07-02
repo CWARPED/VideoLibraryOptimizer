@@ -157,6 +157,11 @@ def build_encode_command(
         "-map_metadata:s:v:0", "-1",
         "-map_chapters", "0",
         "-max_muxing_queue_size", "9999",
+        # Force correct A/V interleaving. With sparse subtitle streams (e.g. PGS),
+        # ffmpeg's default 1s interleave window desynchronises packets: audio ends
+        # up written far from its video, so seeking (players, Jellyfin transcode)
+        # yields little/no audio. 0 = never break interleaving.
+        "-max_interleave_delta", "0",
     ]
     if probe.video_language:
         args += ["-metadata:s:v:0", f"language={probe.video_language}"]
