@@ -346,6 +346,13 @@ function typeBadge(item) {
   return `<button class="chip ${t.c} type-badge" data-type="${item.id}"
     title="Type: ${t.l} — cliquer pour corriger">${t.l}</button>`;
 }
+// Read-only type chip (e.g. for the series list, where there's no single file id).
+function typeChip(content_type, is_anime, liveLabel = "Film") {
+  const t = content_type === "animation"
+    ? (is_anime ? { c: "hdr", l: "Anime" } : { c: "warn", l: "Animation" })
+    : { c: "", l: liveLabel };
+  return `<span class="chip ${t.c}" title="Type: ${t.l}">${t.l}</span>`;
+}
 async function cycleContentType(id) {
   const item = state.movies.find(m => m.id === id)
     || (state.openSeries ? state.openSeries.seasons.flatMap(s => s.episodes).find(e => e.id === id) : null);
@@ -501,6 +508,7 @@ function renderSeries() {
   const rows = ss.map(s => `
     <tr data-slug="${esc(s.series_slug)}" class="srow">
       <td class="cell-file">${esc(s.series_title || s.series_slug)}</td>
+      <td>${typeChip(s.content_type, s.is_anime, "Live action")}</td>
       <td class="num">${s.n_candidates}/${s.n_episodes}</td>
       <td>${gainBar(s.est_gain_bytes, maxGain)}</td>
       <td class="col-sec"><div class="score-bar"><span style="width:${Math.min(100, s.top_score || 0)}%"></span></div></td>
@@ -512,6 +520,7 @@ function renderSeries() {
     ${ss.length === 0 ? `<div class="empty">Aucune série détectée. Lance un scan.</div>` : `
     <div class="panel" style="padding:0"><div class="table-wrap"><table>
       <thead><tr><th>Série</th>
+      <th>Type</th>
       <th class="num sortable" data-ssort="n_candidates">Candidats${ar("n_candidates")}</th>
       <th class="sortable" data-ssort="est_gain_bytes">Gain estimé${ar("est_gain_bytes")}</th>
       <th class="col-sec sortable" data-ssort="top_score">Score max${ar("top_score")}</th>

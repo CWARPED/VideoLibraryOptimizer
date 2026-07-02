@@ -74,6 +74,8 @@ def test_scan_probes_then_caches(tmp_path: Path, db, clock):
     assert len(series) == 1
     assert series[0]["series_slug"] == "dark"
     assert series[0]["n_episodes"] == 2
+    assert series[0]["content_type"] == "live_action"  # type surfaced on the series list
+    assert series[0]["is_anime"] is False
 
 
 def test_changed_file_is_reprobed(tmp_path: Path, db, clock):

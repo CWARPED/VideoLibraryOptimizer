@@ -181,7 +181,9 @@ class ScanRepo:
                                 THEN 1 ELSE 0 END) AS n_candidates,
                        COALESCE(SUM(CASE WHEN excluded_reason IS NULL AND reencoded_at IS NULL
                                 THEN est_gain_bytes ELSE 0 END), 0) AS est_gain_bytes,
-                       MAX(score) AS top_score
+                       MAX(score) AS top_score,
+                       MAX(CASE WHEN content_type = 'animation' THEN 1 ELSE 0 END) AS is_animation,
+                       MAX(is_anime) AS is_anime
                 FROM media_file
                 WHERE kind = ? AND series_slug IS NOT NULL
                 GROUP BY series_slug
@@ -189,7 +191,13 @@ class ScanRepo:
                 """,
                 (MediaKind.EPISODE.value,),
             ).fetchall()
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["content_type"] = "animation" if d.pop("is_animation") else "live_action"
+            d["is_anime"] = bool(d["is_anime"])
+            out.append(d)
+        return out
 
     def list_excluded(self) -> list[MediaFile]:
         """Cached files not proposed as candidates: skipped or already re-encoded."""

@@ -119,6 +119,10 @@ async def list_series(
     for slug, eps in by_slug.items():
         candidates = [e for e in eps if e.score and e.score.excluded_reason is None]
         title = next((e.classification.series_title for e in eps if e.classification), slug)
+        is_animation = any(
+            e.classification and e.classification.content_type == "animation" for e in eps
+        )
+        is_anime = any(e.classification and e.classification.is_anime for e in eps)
         summary.append({
             "series_slug": slug,
             "series_title": title,
@@ -126,6 +130,8 @@ async def list_series(
             "n_candidates": len(candidates),
             "est_gain_bytes": sum(e.score.est_gain_bytes for e in candidates),
             "top_score": max((e.score.score for e in eps if e.score), default=0),
+            "content_type": "animation" if is_animation else "live_action",
+            "is_anime": is_anime,
         })
     summary.sort(key=lambda s: s["est_gain_bytes"], reverse=True)
     return {"series": summary}
