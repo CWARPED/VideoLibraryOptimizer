@@ -615,7 +615,7 @@ async function encodeSeriesSelection() {
 
 // ---------- QUEUE ----------
 const TERMINAL_STATES = ["DONE", "REJECTED", "CANCELLED", "FAILED"];
-const STOPPABLE_STATES = ["QUEUED", "COPYING_IN", "ENCODING", "PAUSED"];
+const STOPPABLE_STATES = ["QUEUED", "COPYING_IN", "READY", "ENCODING", "PAUSED"];
 function renderQueue() {
   const jobs = [...state.jobs].reverse();
   const nTerminal = jobs.filter(j => TERMINAL_STATES.includes(j.state)).length;
@@ -697,7 +697,7 @@ function jobCard(j) {
   } else if (j.state === "PAUSED") {
     actions = `<button class="btn good sm" data-act="resume" title="Reprendre">▶ Reprendre</button>
       <button class="btn bad sm" data-act="forcestop" title="Forcer l'arrêt">⏹ Arrêter</button>`;
-  } else if (["QUEUED", "COPYING_IN"].includes(j.state)) {
+  } else if (["QUEUED", "COPYING_IN", "READY"].includes(j.state)) {
     actions = `<button class="btn ghost sm" data-act="cancel">Annuler</button>`;
   } else if (terminal) {
     actions = `<button class="btn ghost sm job-del" data-del="${j.id}" title="Retirer de la liste">✕</button>`;
@@ -724,8 +724,9 @@ function validationBlock(j) {
 }
 function stateLabel(s) {
   return ({
-    QUEUED: "En attente", COPYING_IN: "Copie locale…", ENCODING: "Encodage",
-    PAUSED: "En pause", VALIDATING: "Validation…", AWAITING_CONFIRMATION: "À valider",
+    QUEUED: "En attente", COPYING_IN: "Copie locale…", READY: "Prêt (copié)",
+    ENCODING: "Encodage", PAUSED: "En pause", VALIDATING: "Validation…",
+    AWAITING_CONFIRMATION: "À valider",
     COPYING_BACK: "Renvoi…", REPLACING: "Remplacement…", DONE: "Terminé",
     REJECTED: "Rejeté", CANCELLED: "Annulé", FAILED: "Échec",
   })[s] || s;

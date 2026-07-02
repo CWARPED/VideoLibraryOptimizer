@@ -33,6 +33,7 @@ class JobState(str, Enum):
 
     QUEUED = "QUEUED"
     COPYING_IN = "COPYING_IN"
+    READY = "READY"  # local copy staged, waiting for a free encode slot (prefetch)
     ENCODING = "ENCODING"
     PAUSED = "PAUSED"  # encode suspended by the user (ffmpeg process frozen)
     VALIDATING = "VALIDATING"
@@ -58,6 +59,7 @@ class JobState(str, Enum):
         """States the worker actively processes (reset to QUEUED on crash recovery)."""
         return self in {
             JobState.COPYING_IN,
+            JobState.READY,
             JobState.ENCODING,
             JobState.PAUSED,
             JobState.VALIDATING,

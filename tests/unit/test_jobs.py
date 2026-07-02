@@ -412,6 +412,66 @@ async def test_pause_all_and_resume_all(tmp_path, db, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_prefetches_next_file_while_encoding(tmp_path, db):
+    """With a single encode slot, the next file is copied locally (READY) ahead."""
+    SettingsRepo(db).set("max_parallel_encodes", 1)
+    runner = GatedRunner()
+    mgr, jobs_repo, scan_repo = _build(tmp_path, db, runner)
+    media = [_persist_media(scan_repo, _make_source(tmp_path, name=f"P{i}.mkv")) for i in range(2)]
+
+    await mgr.start()
+    mgr.enqueue(media, Codec.X265, "Light")
+
+    # One job encodes while the other is prefetched to READY (not yet encoding).
+    for _ in range(250):
+        vals = [j.state for j in jobs_repo.list()]
+        if JobState.ENCODING in vals and JobState.READY in vals:
+            break
+        await asyncio.sleep(0.02)
+    assert JobState.ENCODING in vals and JobState.READY in vals
+    assert runner.max_concurrent == 1  # single slot respected
+
+    runner.release.set()
+    for _ in range(250):
+        awaiting = [j for j in jobs_repo.list() if j.state is JobState.AWAITING_CONFIRMATION]
+        if len(awaiting) == 2:
+            break
+        await asyncio.sleep(0.02)
+    assert len([j for j in jobs_repo.list() if j.state is JobState.AWAITING_CONFIRMATION]) == 2
+    await mgr.stop()
+
+
+@pytest.mark.asyncio
+async def test_cancel_ready_job_cleans_staged_copy(tmp_path, db):
+    """Cancelling a prefetched (READY) job finalises it and removes the local copy."""
+    SettingsRepo(db).set("max_parallel_encodes", 1)
+    runner = GatedRunner()
+    mgr, jobs_repo, scan_repo = _build(tmp_path, db, runner)
+    media = [_persist_media(scan_repo, _make_source(tmp_path, name=f"C{i}.mkv")) for i in range(2)]
+
+    await mgr.start()
+    mgr.enqueue(media, Codec.X265, "Light")
+
+    ready_id = None
+    for _ in range(250):
+        ready = [j for j in jobs_repo.list() if j.state is JobState.READY]
+        if ready:
+            ready_id = ready[0].id
+            break
+        await asyncio.sleep(0.02)
+    assert ready_id is not None
+    workdir = Path(jobs_repo.get(ready_id).work_dir)
+    assert workdir.exists()
+
+    mgr.cancel(ready_id)
+    assert jobs_repo.get(ready_id).state is JobState.CANCELLED
+    assert not workdir.exists()  # staged local copy cleaned up
+
+    runner.release.set()
+    await mgr.stop()
+
+
+@pytest.mark.asyncio
 async def test_cancel_all_stops_queued(tmp_path, db):
     mgr, jobs_repo, scan_repo = _build(tmp_path, db, FakeRunner())  # dispatcher not started
     media = [_persist_media(scan_repo, _make_source(tmp_path, name=f"Q{i}.mkv")) for i in range(2)]

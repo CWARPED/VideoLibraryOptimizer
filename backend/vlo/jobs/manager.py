@@ -1,10 +1,13 @@
 """Concurrent job workers: copy in -> encode -> validate -> await -> replace.
 
-Up to ``max_parallel_encodes`` jobs run at once. A single 1080p x265/AV1 encode
-under-uses a many-core CPU (frame-parallelism ceiling), so running 2+ in
-parallel raises throughput; it also naturally overlaps the next job's NAS copy
-with the ongoing encodes. Jobs that finish encoding+validation wait in
-AWAITING_CONFIRMATION (off-pool) until the user confirms/rejects them.
+Copying and encoding are decoupled into two pools so the CPU never idles on the
+network. A single sequential *prefetcher* copies upcoming sources from the (NAS)
+library into local work dirs, keeping up to ``max_parallel_encodes`` files
+STAGED (READY) ahead. The encode pool (also ``max_parallel_encodes``) pulls the
+oldest READY job and runs encode -> validate. So while N encodes run, the next N
+files are already (or being) fetched locally and start instantly when a slot
+frees. Jobs that finish encoding+validation wait in AWAITING_CONFIRMATION
+(off-pool) until the user confirms/rejects them.
 """
 
 from __future__ import annotations
@@ -72,8 +75,10 @@ class JobManager:
         self._wake = asyncio.Event()
         self._dispatcher: asyncio.Task | None = None
         self._stopping = False
-        # job_id -> running task / per-job cancel flag / last broadcast progress
-        self._active: dict[int, asyncio.Task] = {}
+        # Two pools: the sequential prefetch copier and the encode workers.
+        self._copying: dict[int, asyncio.Task] = {}   # job_id -> copy task (COPYING_IN)
+        self._encoding: dict[int, asyncio.Task] = {}  # job_id -> encode task (ENCODING+)
+        # A job's cancel flag spans both phases (created at copy claim).
         self._cancel_events: dict[int, threading.Event] = {}
         self._pids: dict[int, int] = {}  # job_id -> ffmpeg pid (for pause/resume)
         self._last_progress: dict[int, float] = {}
@@ -91,7 +96,7 @@ class JobManager:
         self._wake.set()
         for ev in list(self._cancel_events.values()):
             ev.set()
-        for task in list(self._active.values()):
+        for task in [*self._copying.values(), *self._encoding.values()]:
             task.cancel()
         if self._dispatcher is not None:
             self._dispatcher.cancel()
@@ -202,19 +207,24 @@ class JobManager:
         job = self._jobs.get(job_id)
         if job is None or job.state.is_terminal:
             return
-        ev = self._cancel_events.get(job_id)
-        if ev is not None:
-            # If suspended, resume first so the worker can observe the cancel and
-            # terminate ffmpeg (a frozen process emits no progress to react on).
-            if job.state is JobState.PAUSED:
-                pid = self._pids.get(job_id)
-                if pid is not None:
-                    resume_process(pid)
-            ev.set()  # active job: copy/encode aborts -> finalised CANCELLED by the worker
+        # A job with a running copy or encode task: signal its cancel event and
+        # let the worker abort and finalise CANCELLED.
+        if job_id in self._copying or job_id in self._encoding:
+            ev = self._cancel_events.get(job_id)
+            if ev is not None:
+                # If suspended, resume first so the worker can observe the cancel
+                # (a frozen ffmpeg emits no progress to react on).
+                if job.state is JobState.PAUSED:
+                    pid = self._pids.get(job_id)
+                    if pid is not None:
+                        resume_process(pid)
+                ev.set()
             return
-        if job.state in (JobState.QUEUED, JobState.AWAITING_CONFIRMATION):
-            self._cleanup_workdir(job)
-            self._set_state(job_id, JobState.CANCELLED, finished_at=self._now())
+        # Off-pool jobs (QUEUED / READY / AWAITING_CONFIRMATION): finalise here.
+        # READY still holds a staged local copy, so clean its work dir.
+        self._cancel_events.pop(job_id, None)
+        self._cleanup_workdir(job)
+        self._set_state(job_id, JobState.CANCELLED, finished_at=self._now())
 
     def pause(self, job_id: int) -> None:
         """Suspend a running encode (freezes the ffmpeg process)."""
@@ -262,7 +272,8 @@ class JobManager:
     def cancel_all(self) -> int:
         """Cancel every queued/active/paused job (force-stop all). Returns the count."""
         stoppable = {
-            JobState.QUEUED, JobState.COPYING_IN, JobState.ENCODING, JobState.PAUSED,
+            JobState.QUEUED, JobState.COPYING_IN, JobState.READY,
+            JobState.ENCODING, JobState.PAUSED,
         }
         ids = [j.id for j in self._jobs.list() if j.state in stoppable]
         for jid in ids:
@@ -272,35 +283,106 @@ class JobManager:
     # --- dispatcher -----------------------------------------------------
     async def _run_dispatcher(self) -> None:
         while not self._stopping:
-            while not self._stopping and len(self._active) < self._max_parallel():
-                job = self._claim_next()
-                if job is None:
-                    break
-                ev = threading.Event()
-                self._cancel_events[job.id] = ev
-                task = asyncio.create_task(
-                    self._process_job_safe(job, ev), name=f"vlo-job-{job.id}"
-                )
-                self._active[job.id] = task
-                task.add_done_callback(self._make_done_cb(job.id))
-
+            self._fill_pools()
             self._wake.clear()
-            if len(self._active) < self._max_parallel() and self._jobs.next_queued() is not None:
-                continue  # capacity freed and work waiting -> refill immediately
+            if self._fill_pools():  # a slot may have freed while filling -> refill
+                continue
             await self._wake.wait()
 
-    def _claim_next(self) -> Job | None:
-        """Pick the next queued job and reserve it (so it isn't claimed twice)."""
+    def _fill_pools(self) -> bool:
+        """Start as much work as capacity/disk allow. True if anything started."""
+        started = False
+        mx = self._max_parallel()
+        # Encode pool: pull staged (READY) jobs into free encode slots.
+        while not self._stopping and len(self._encoding) < mx:
+            job = self._claim_ready()
+            if job is None:
+                break
+            self._start_encode(job)
+            started = True
+        # Prefetch: one copy at a time, keeping up to `mx` files staged ahead.
+        if not self._stopping and not self._copying and self._staged_count() < mx:
+            job = self._next_copy_candidate()
+            if job is not None:
+                self._start_copy(job)
+                started = True
+        return started
+
+    def _staged_count(self) -> int:
+        """Files local-and-waiting (not yet picked up for encode) or being copied."""
+        waiting = sum(
+            1 for j in self._jobs.list(state=JobState.READY) if j.id not in self._encoding
+        )
+        return waiting + len(self._copying)
+
+    def _work_in_flight(self) -> bool:
+        return bool(self._copying) or bool(self._encoding) or bool(
+            self._jobs.list(state=JobState.READY)
+        )
+
+    def _space_for(self, job: Job) -> bool:
+        try:
+            ensure_space(
+                self._work_dir(), (job.size_src_bytes or 0) + self._estimated_output(job),
+                margin_bytes=self._settings.disk_space_margin_bytes,
+            )
+            return True
+        except DiskSpaceError:
+            return False
+
+    def _next_copy_candidate(self) -> Job | None:
+        """Next queued job to prefetch, deferring when the local disk is full."""
         job = self._jobs.next_queued()
         if job is None:
             return None
-        self._jobs.update(job.id, state=JobState.COPYING_IN, started_at=self._now())
-        job.state = JobState.COPYING_IN
+        # Not enough local space yet: if other jobs are in flight, wait for one to
+        # finish (freeing space). If nothing else is running, let it through so the
+        # copy fails cleanly with a disk-space error instead of stalling forever.
+        if not self._space_for(job) and self._work_in_flight():
+            return None
         return job
 
-    def _make_done_cb(self, job_id: int) -> Callable[[asyncio.Task], None]:
+    def _claim_ready(self) -> Job | None:
+        """Oldest staged job not already picked up by an encode task.
+
+        The DB state stays READY until the encode phase flips it to ENCODING just
+        before ffmpeg starts; the in-memory ``_encoding`` set prevents a second
+        claim in the meantime.
+        """
+        for job in self._jobs.list(state=JobState.READY):
+            if job.id not in self._encoding:
+                return job
+        return None
+
+    def _start_copy(self, job: Job) -> None:
+        ev = threading.Event()
+        self._cancel_events[job.id] = ev
+        self._set_state(job.id, JobState.COPYING_IN, started_at=self._now())
+        task = asyncio.create_task(self._copy_phase_safe(job, ev), name=f"vlo-copy-{job.id}")
+        self._copying[job.id] = task
+        task.add_done_callback(self._make_copy_done_cb(job.id))
+
+    def _start_encode(self, job: Job) -> None:
+        ev = self._cancel_events.get(job.id) or threading.Event()
+        self._cancel_events[job.id] = ev
+        task = asyncio.create_task(self._encode_phase_safe(job, ev), name=f"vlo-encode-{job.id}")
+        self._encoding[job.id] = task
+        task.add_done_callback(self._make_encode_done_cb(job.id))
+
+    def _make_copy_done_cb(self, job_id: int) -> Callable[[asyncio.Task], None]:
         def cb(_task: asyncio.Task) -> None:
-            self._active.pop(job_id, None)
+            self._copying.pop(job_id, None)
+            job = self._jobs.get(job_id)
+            # Keep the cancel event for the encode phase (job is now READY); drop it
+            # only if the copy phase ended the job (cancelled / failed).
+            if job is None or job.state.is_terminal:
+                self._cancel_events.pop(job_id, None)
+            self._wake.set()
+        return cb
+
+    def _make_encode_done_cb(self, job_id: int) -> Callable[[asyncio.Task], None]:
+        def cb(_task: asyncio.Task) -> None:
+            self._encoding.pop(job_id, None)
             self._cancel_events.pop(job_id, None)
             self._pids.pop(job_id, None)
             self._last_progress.pop(job_id, None)
@@ -308,39 +390,38 @@ class JobManager:
             self._wake.set()
         return cb
 
-    async def _process_job_safe(self, job: Job, cancel_event: threading.Event) -> None:
+    def _fail_job(self, job: Job, exc: Exception) -> None:
+        logger.exception("job %s failed", job.id)
+        msg = f"{type(exc).__name__}: {exc}".strip().rstrip(":").strip()
+        self._cleanup_workdir(self._jobs.get(job.id) or job)
+        self._set_state(
+            job.id, JobState.FAILED,
+            error_message=msg or type(exc).__name__, finished_at=self._now(),
+        )
+
+    # --- phase 1: prefetch copy -----------------------------------------
+    async def _copy_phase_safe(self, job: Job, cancel_event: threading.Event) -> None:
         try:
-            await self._process_job(job, cancel_event)
+            await self._copy_phase(job, cancel_event)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - last-resort guard
-            logger.exception("job %s failed", job.id)
-            msg = f"{type(exc).__name__}: {exc}".strip().rstrip(":").strip()
-            self._cleanup_workdir(self._jobs.get(job.id) or job)
-            self._set_state(
-                job.id, JobState.FAILED,
-                error_message=msg or type(exc).__name__, finished_at=self._now(),
-            )
+            self._fail_job(job, exc)
 
-    async def _process_job(self, job: Job, cancel_event: threading.Event) -> None:
+    async def _copy_phase(self, job: Job, cancel_event: threading.Event) -> None:
         assert job.id is not None
         loop = asyncio.get_running_loop()
-        self._last_progress[job.id] = -1.0
-
         source = Path(job.source_path)
         work_root = self._work_dir()
         work = work_root / f"job_{job.id}"
-        logger.info("job %s: starting (%s, %s/%s)", job.id, job.source_path,
+        logger.info("job %s: prefetch copy (%s, %s/%s)", job.id, job.source_path,
                     job.codec.value, job.profile_name)
 
-        est_out = self._estimated_output(job)
         self._set_state(job.id, JobState.COPYING_IN, work_dir=str(work))
         ensure_space(
-            work_root, (job.size_src_bytes or 0) + est_out,
+            work_root, (job.size_src_bytes or 0) + self._estimated_output(job),
             margin_bytes=self._settings.disk_space_margin_bytes,
         )
-
-        # 1) Copy the (possibly NAS) source to local work dir (cancellable mid-copy).
         if not source.exists():
             raise EncodeError(f"source file not found: {source}")
         try:
@@ -353,19 +434,43 @@ class JobManager:
             return
         except OSError as exc:
             raise EncodeError(f"copy from source failed: {exc}") from exc
-        logger.info("job %s: copied locally (%s)", job.id, local_src)
+        if cancel_event.is_set():
+            self._cleanup_workdir(job)
+            self._set_state(job.id, JobState.CANCELLED, finished_at=self._now())
+            return
+        logger.info("job %s: staged locally, READY (%s)", job.id, local_src)
+        self._set_state(job.id, JobState.READY)
+
+    # --- phase 2: encode + validate -------------------------------------
+    async def _encode_phase_safe(self, job: Job, cancel_event: threading.Event) -> None:
+        try:
+            await self._encode_phase(job, cancel_event)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - last-resort guard
+            self._fail_job(job, exc)
+
+    async def _encode_phase(self, job: Job, cancel_event: threading.Event) -> None:
+        assert job.id is not None
+        loop = asyncio.get_running_loop()
+        self._last_progress[job.id] = -1.0
+
+        work = Path(job.work_dir) if job.work_dir else self._work_dir() / f"job_{job.id}"
+        local_src = work / Path(job.source_path).name
+        if not local_src.exists():
+            raise EncodeError("staged local copy missing")
         if cancel_event.is_set():
             self._cleanup_workdir(job)
             self._set_state(job.id, JobState.CANCELLED, finished_at=self._now())
             return
 
-        # 2) Re-probe the local copy for accurate stream/colour info.
+        # Re-probe the local copy for accurate stream/colour info.
         try:
             src_probe = await loop.run_in_executor(None, self._probe_path, str(local_src))
         except ProbeError as exc:
             raise EncodeError(f"could not probe local copy: {exc}") from exc
 
-        # 3) Encode.
+        # Encode.
         out_local = work / "out.mkv"
         profile = self._cfg_repo.get_profile(job.profile_name)
         params = params_for(profile, job.codec) if profile else ""
@@ -402,7 +507,7 @@ class JobManager:
         if not out_local.exists():
             raise EncodeError("encode produced no output file")
 
-        # 4) Validate.
+        # Validate.
         self._set_state(job.id, JobState.VALIDATING, progress=1.0)
         try:
             out_probe = await loop.run_in_executor(None, self._probe_path, str(out_local))
@@ -433,7 +538,7 @@ class JobManager:
             )
             return
 
-        # 5) Wait for the user. Output stays on local disk.
+        # Wait for the user. Output stays on local disk.
         logger.info("job %s: ready for confirmation (gain %d bytes)", job.id, report.gain_bytes)
         self._set_state(job.id, JobState.AWAITING_CONFIRMATION)
 
@@ -499,13 +604,15 @@ class JobManager:
         self._broadcast_queue()
 
     def has_active(self) -> bool:
-        """True if at least one job is currently encoding (binary in use)."""
-        return bool(self._active)
+        """True if at least one job is currently encoding (ffmpeg binary in use)."""
+        return bool(self._encoding)
 
     def _broadcast_queue(self) -> None:
         self._bus.publish({
             "type": "queue",
-            "running": list(self._active.keys()),
+            "running": list(self._encoding.keys()),
+            "copying": list(self._copying.keys()),
+            "staged": [j.id for j in self._jobs.list(state=JobState.READY)],
             "queued": [j.id for j in self._jobs.list(state=JobState.QUEUED)],
             "awaiting": [j.id for j in self._jobs.list(state=JobState.AWAITING_CONFIRMATION)],
         })

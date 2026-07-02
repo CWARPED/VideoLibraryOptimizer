@@ -124,6 +124,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .state.DONE { background: rgba(62,207,142,.2); color: var(--good); }
 .state.FAILED, .state.CANCELLED, .state.REJECTED { background: rgba(240,85,109,.2); color: var(--bad); }
 .state.COPYING_IN, .state.COPYING_BACK, .state.REPLACING, .state.VALIDATING { background: rgba(91,140,255,.15); color: var(--accent); }
+.state.READY { background: rgba(62,207,142,.16); color: var(--good); }
 
 .checks { font-size: 12px; margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
 .check { padding: 2px 8px; border-radius: 6px; background: var(--panel-2); }
