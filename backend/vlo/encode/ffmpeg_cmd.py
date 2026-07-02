@@ -54,6 +54,12 @@ def _is_lossless_audio(track) -> bool:
     return False
 
 
+# Canonical channel layouts libopus (mapping family 1) accepts, by channel
+# count. Source tracks often carry a "side"/"wide" variant (e.g. DTS-HD MA
+# "5.1(side)") that libopus rejects; we relabel to these with channelmap.
+_OPUS_CHANNEL_LAYOUT = {3: "3.0", 4: "quad", 5: "5.0", 6: "5.1", 7: "6.1", 8: "7.1"}
+
+
 def _opus_bitrate_k(channels: int | None) -> int:
     """A transparent Opus bitrate for the given channel count."""
     ch = channels or 2
@@ -80,7 +86,14 @@ def audio_codec_args(probe: ProbeResult, *, transcode_lossless: bool) -> list[st
     for i, tr in enumerate(probe.audio):
         if _is_lossless_audio(tr):
             args += [f"-c:a:{i}", "libopus", f"-b:a:{i}", f"{_opus_bitrate_k(tr.channels)}k"]
-            if (tr.channels or 2) > 2:
+            ch = tr.channels or 2
+            if ch > 2:
+                # Relabel side/wide layout variants (e.g. 5.1(side)) to the
+                # canonical layout libopus accepts — a pure index remap, so the
+                # audio is unchanged. Without this, libopus refuses to open.
+                layout = _OPUS_CHANNEL_LAYOUT.get(ch)
+                if layout:
+                    args += [f"-filter:a:{i}", f"channelmap=channel_layout={layout}"]
                 args += [f"-mapping_family:a:{i}", "1"]  # required for surround in libopus
         else:
             args += [f"-c:a:{i}", "copy"]
