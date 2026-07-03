@@ -22,7 +22,7 @@ _SCORING_KEYS = (
 _KV_KEYS = (
     "tmdb_api_key", "tmdb_enabled", "animation_keywords",
     "max_parallel_encodes", "filename_tag", "rewrite_codec_tags",
-    "audio_lossless_to_opus", "scan_workers",
+    "scan_workers",
 )
 
 
@@ -57,9 +57,6 @@ async def get_settings_endpoint(request: Request):
             "max_parallel_encodes": repo.get("max_parallel_encodes", s.max_parallel_encodes),
             "filename_tag": repo.get("filename_tag", s.filename_tag),
             "rewrite_codec_tags": repo.get("rewrite_codec_tags", s.rewrite_codec_tags),
-            "audio_lossless_to_opus": repo.get(
-                "audio_lossless_to_opus", s.audio_lossless_to_opus
-            ),
             "scan_workers": repo.get("scan_workers", s.scan_workers),
         },
         "work_dir": repo.get("work_dir", str(s.work_dir)),

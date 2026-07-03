@@ -7,10 +7,9 @@ Scanne une bibliothèque vidéo (films + séries), repère les fichiers **trop l
 pour leur résolution/durée**, les classe par priorité de réencodage, et permet de
 les réencoder en **léger mais qualitatif** (4K/HD *light*) en toute sécurité.
 
-- **Résolution conservée**, **toutes les pistes audio conservées** (copie sans
-  réencode ; option pour ne réencoder que l'audio **lossless** — TrueHD/DTS-HD MA/
-  PCM/FLAC — en **Opus** transparent), **tous les sous-titres conservés**,
-  chapitres/métadonnées préservés, sortie **MKV**.
+- **Résolution conservée**, **toutes les pistes audio conservées** (copie
+  bit-perfect, **jamais** de ré-encodage audio), **tous les sous-titres
+  conservés**, chapitres/métadonnées préservés, sortie **MKV**.
 - Codec au choix : **HEVC x265** ou **SVT-AV1**, en **10-bit** (défaut) ou **8-bit**
   (meilleure compatibilité de lecture), réglable **par job**.
 - Profils de qualité **CRF** prédéfinis, classés **du plus qualitatif au plus
@@ -72,7 +71,7 @@ les réencoder en **léger mais qualitatif** (4K/HD *light*) en toute sécurité
   fichiers sur le disque ne sont jamais touchés ; un nouveau scan régénère le cache).
 - **Réglages** : clé TMDB, mots-clés de repli, tables bits/pixel
   (live action + animation), profils CRF, encodages simultanés, **analyses de scan
-  simultanées**, **audio lossless → Opus**, tag/réécriture du nom, dossier de travail
+  simultanées**, tag/réécriture du nom, dossier de travail
   local, pondérations.
 
 ## Prérequis

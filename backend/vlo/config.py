@@ -49,8 +49,6 @@ class Settings(BaseSettings):
     max_parallel_encodes: int = 2  # one 1080p encode under-uses a 16c/32t CPU
     filename_tag: str = ""  # appended to the output filename stem, e.g. " x265"
     rewrite_codec_tags: bool = False  # replace codec tokens in name/title (x264->x265…)
-    # Transcode lossless audio (TrueHD/DTS-HD MA/PCM/FLAC) to Opus; lossy stays copied.
-    audio_lossless_to_opus: bool = False
 
     # Server.
     host: str = "127.0.0.1"
