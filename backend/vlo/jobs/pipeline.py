@@ -108,13 +108,13 @@ def safe_replace(local_out: Path, original_path: Path, final_stem: str | None = 
 
 
 async def decode_check(ffmpeg_bin: str, path: Path, *, timeout: float = 1800.0) -> bool:
-    """Decode the output's video and audio to a null muxer to detect corruption.
+    """Decode the output's re-encoded video to a null muxer to detect corruption.
 
     Runs synchronously in a worker thread (not via asyncio subprocess) so it
     works under any event loop, including the SelectorEventLoop used by uvicorn
-    in --reload mode on Windows. Subtitles are intentionally not mapped: they
-    are stream-copied (never re-encoded) and the null muxer cannot encode them,
-    which would otherwise raise a spurious error.
+    in --reload mode on Windows. Only the video is checked: audio and subtitles
+    are stream-copied bit-for-bit, so a decode error there is inherited from the
+    source (not something the re-encode introduced) and must not fail the job.
     """
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _decode_check_blocking, ffmpeg_bin, str(path), timeout)
@@ -150,9 +150,13 @@ def _audio_end_blocking(ffmpeg_bin: str, path: str, timeout: float) -> float:
 
 
 def _decode_check_blocking(ffmpeg_bin: str, path: str, timeout: float) -> bool:
+    # Only the *video* is integrity-checked: it's the single stream we re-encode.
+    # Audio and subtitles are stream-copied bit-for-bit from the source, so any
+    # decode error there is inherited from the source (identical to the file the
+    # user already has) — failing the encode for it would be a false positive.
     args = [
         ffmpeg_bin, "-v", "error", "-hide_banner",
-        "-i", path, "-map", "0:v?", "-map", "0:a?", "-f", "null", "-",
+        "-i", path, "-map", "0:v?", "-f", "null", "-",
     ]
     try:
         proc = subprocess.run(
