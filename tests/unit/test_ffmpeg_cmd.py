@@ -8,6 +8,7 @@ from vlo.encode.ffmpeg_cmd import (
     PIX_FMT_8BIT,
     PIX_FMT_10BIT,
     build_encode_command,
+    build_subtitle_mux_command,
     gop_for_fps,
     subtitle_codec_overrides,
 )
@@ -49,10 +50,10 @@ def test_x265_command_core_flags():
     assert _adjacent(args, "-crf") == "20"
     assert _adjacent(args, "-preset") == "slow"
     assert "-c:a" in args and _adjacent(args, "-c:a") == "copy"
-    assert _adjacent(args, "-c:s") == "copy"
-    assert _adjacent(args, "-c:t") == "copy"
-    # Explicit mapping that drops cover art and data streams.
-    assert "0:V?" in args and "0:a?" in args and "0:s?" in args and "0:t?" in args
+    # Phase 1 muxes video + audio only; subtitles/attachments come in phase 2.
+    assert "0:V?" in args and "0:a?" in args
+    assert "0:s?" not in args and "0:t?" not in args
+    assert "-c:s" not in args
     assert args[-1] == "out.mkv"
     assert "-progress" in args
 
@@ -118,15 +119,23 @@ def test_video_stream_stats_dropped_and_language_reapplied():
     assert _adjacent(args, "-metadata:s:v:0") == "language=fre"
 
 
-def test_interleaving_forced_for_sparse_subtitle_streams():
-    """Regression: PGS subtitles made ffmpeg misinterleave audio, so seeking the
-    output (players / Jellyfin transcode) produced little or no sound. We force
-    interleaving with -max_interleave_delta 0."""
-    args = build_encode_command(
-        ffmpeg_bin="ffmpeg", input_path="in.mkv", output_path="out.mkv",
-        codec=Codec.SVTAV1, crf=30, preset="6", probe=make_probe(),
+def test_subtitle_mux_command_adds_subs_and_forces_interleaving():
+    """Phase 2: subtitles/attachments come from the source (input 1), video+audio
+    from the encoded file (input 0), all stream-copied and correctly interleaved
+    (-max_interleave_delta 0) so the output is seekable. mov_text -> srt applies."""
+    subs = [SubTrack(index=2, codec="hdmv_pgs_subtitle"), SubTrack(index=3, codec="mov_text")]
+    args = build_subtitle_mux_command(
+        ffmpeg_bin="ffmpeg", video_audio_path="video.mkv", source_path="src.mkv",
+        output_path="out.mkv", probe=make_probe(subs=subs),
     )
+    assert args[:5] == ["ffmpeg", "-hide_banner", "-y", "-i", "video.mkv"]
+    assert "src.mkv" in args
+    assert "0:v" in args and "0:a?" in args   # video/audio from the encode
+    assert "1:s?" in args and "1:t?" in args  # subtitles/attachments from the source
+    assert _adjacent(args, "-c") == "copy"
     assert _adjacent(args, "-max_interleave_delta") == "0"
+    assert _adjacent(args, "-c:s:1") == "srt"  # mov_text transcoded
+    assert args[-1] == "out.mkv"
 
 
 def test_title_override_applied():
@@ -151,7 +160,7 @@ def _with_audio(probe, tracks):
     return probe
 
 
-def test_audio_and_subtitles_always_stream_copied():
+def test_audio_always_stream_copied():
     """Audio is never re-encoded: every track is stream-copied bit-perfect,
     regardless of codec (no Opus transcode path)."""
     probe = _with_audio(make_probe(), [

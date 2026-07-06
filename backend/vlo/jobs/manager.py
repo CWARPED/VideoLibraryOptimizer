@@ -26,7 +26,7 @@ from ..config import Settings
 from ..core.enums import Codec, JobState
 from ..core.errors import DiskSpaceError, EncodeError, ProbeError
 from ..core.models import Job, MediaFile, ProbeResult
-from ..encode.ffmpeg_cmd import build_encode_command
+from ..encode.ffmpeg_cmd import build_encode_command, build_subtitle_mux_command
 from ..encode.profiles import params_for, resolve_encode_params
 from ..encode.runner import EncodeProgress, EncodeRunner
 from ..encode.suspend import resume_process, suspend_process
@@ -498,15 +498,20 @@ class JobManager:
         except ProbeError as exc:
             raise EncodeError(f"could not probe local copy: {exc}") from exc
 
-        # Encode.
+        # Encode. Phase 1 muxes video + audio only (no subtitles): muxing sparse
+        # PGS subtitles with the slow encoder in one pass truncates the video.
+        # If the source has subtitles, phase 1 writes an intermediate that phase 2
+        # remuxes with the subtitles added (fast stream copy).
         out_local = work / "out.mkv"
+        has_subs = bool(src_probe.subs)
+        enc_target = (work / "video.mkv") if has_subs else out_local
         profile = self._cfg_repo.get_profile(job.profile_name)
         params = params_for(profile, job.codec) if profile else ""
         _, title = self._output_naming(job)
         args = build_encode_command(
             ffmpeg_bin=self._ffmpeg,
             input_path=str(local_src),
-            output_path=str(out_local),
+            output_path=str(enc_target),
             codec=job.codec,
             crf=job.crf,
             preset=job.preset,
@@ -533,8 +538,38 @@ class JobManager:
             self._cleanup_workdir(job)
             self._set_state(job.id, JobState.CANCELLED, finished_at=self._now())
             return
-        if not out_local.exists():
+        if not enc_target.exists():
             raise EncodeError("encode produced no output file")
+
+        # Phase 2: add the subtitles (and attachments) from the source via a fast
+        # stream-copy remux, correctly interleaved for seeking.
+        if has_subs:
+            mux_args = build_subtitle_mux_command(
+                ffmpeg_bin=self._ffmpeg,
+                video_audio_path=str(enc_target),
+                source_path=str(local_src),
+                output_path=str(out_local),
+                probe=src_probe,
+            )
+            logger.info("job %s: adding subtitles -> %s", job.id, " ".join(mux_args))
+            try:
+                mux_result = await self._runner.run(
+                    mux_args,
+                    duration_s=src_probe.duration_s,
+                    cancel_event=cancel_event,
+                    on_spawn=lambda pid: self._pids.__setitem__(job.id, pid),
+                )
+            except FileNotFoundError as exc:
+                raise EncodeError(f"ffmpeg not found ({self._ffmpeg}): {exc}") from exc
+            finally:
+                self._pids.pop(job.id, None)
+            if mux_result.cancelled:
+                self._cleanup_workdir(job)
+                self._set_state(job.id, JobState.CANCELLED, finished_at=self._now())
+                return
+            if not out_local.exists():
+                raise EncodeError("subtitle remux produced no output file")
+            enc_target.unlink(missing_ok=True)  # drop the intermediate
 
         # ffmpeg is done: hand off to the (off-pool) validation phase and free the
         # encode slot NOW so the next queued encode can start immediately instead of

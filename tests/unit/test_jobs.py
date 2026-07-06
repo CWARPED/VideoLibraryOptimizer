@@ -71,7 +71,8 @@ class ArgCaptureRunner(FakeRunner):
         self.args = None
 
     async def run(self, args, **kwargs):
-        self.args = list(args)
+        if self.args is None:  # capture phase 1 (the encode), not the phase-2 sub remux
+            self.args = list(args)
         return await super().run(args, **kwargs)
 
 

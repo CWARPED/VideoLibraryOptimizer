@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from vlo.core.enums import Codec
-from vlo.encode.ffmpeg_cmd import build_encode_command
+from vlo.encode.ffmpeg_cmd import build_encode_command, build_subtitle_mux_command
 from vlo.encode.runner import EncodeRunner
 from vlo.encode.validate import validate_output
 from vlo.jobs.pipeline import decode_check
@@ -72,8 +72,10 @@ async def test_encode_preserves_streams_and_is_valid(tmp_path, codec, encoder, c
     assert src_probe.n_subs == 1
 
     out = tmp_path / "out.mkv"
+    video_mkv = tmp_path / "video.mkv"
+    # Phase 1: encode video + audio (no subtitles).
     args = build_encode_command(
-        ffmpeg_bin=FFMPEG, input_path=str(src), output_path=str(out),
+        ffmpeg_bin=FFMPEG, input_path=str(src), output_path=str(video_mkv),
         codec=codec, crf=crf, preset=preset, probe=src_probe,
     )
 
@@ -83,9 +85,18 @@ async def test_encode_preserves_streams_and_is_valid(tmp_path, codec, encoder, c
         on_progress=lambda p: progresses.append(p.progress),
     )
     assert not result.cancelled and result.returncode == 0
-    assert out.exists()
+    assert video_mkv.exists()
     # Progress was reported and reached (near) completion.
     assert progresses and progresses[-1] >= 0.9
+
+    # Phase 2: add the subtitles back from the source via a stream-copy remux.
+    mux_args = build_subtitle_mux_command(
+        ffmpeg_bin=FFMPEG, video_audio_path=str(video_mkv), source_path=str(src),
+        output_path=str(out), probe=src_probe,
+    )
+    mux_result = await EncodeRunner().run(mux_args, duration_s=src_probe.duration_s)
+    assert not mux_result.cancelled and mux_result.returncode == 0
+    assert out.exists()
 
     out_probe = probe_svc.probe(str(out))
     decoded_ok = await decode_check(FFMPEG, out)

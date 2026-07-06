@@ -66,11 +66,14 @@ def build_encode_command(
     eight_bit: bool = False,
     progress_to_stdout: bool = True,
 ) -> list[str]:
-    """Return the full ffmpeg argument list for one re-encode.
+    """Return the ffmpeg argument list for phase 1: re-encode the video.
 
-    Resolution is preserved. All audio/subtitles/attachments/chapters are kept.
-    Only the video is re-encoded; audio and subtitles are always stream-copied
-    (bit-perfect). Output is always MKV.
+    Only video + audio (+ chapters/metadata) are muxed here — **subtitles are
+    deliberately excluded**. Muxing sparse bitmap subtitles (PGS) together with
+    a slow video encoder in one pass makes ffmpeg truncate the video stream mid
+    file. Subtitles are added afterwards by :func:`build_subtitle_mux_command`,
+    a fast stream-copy remux where all streams are already complete. Audio is
+    always stream-copied; output is MKV.
 
     The re-encoded video stream's stale source statistics tags (BPS, DURATION,
     NUMBER_OF_BYTES…) are dropped so the metadata matches the new encode; the
@@ -82,23 +85,15 @@ def build_encode_command(
         "-hide_banner",
         "-y",
         "-i", input_path,
-        # Explicit mapping: real video only (0:V drops cover art), all audio,
-        # all subs, all attachments. Data streams are intentionally not mapped.
+        # Real video only (0:V drops cover art) + all audio. Subtitles and
+        # attachments are added in the phase-2 subtitle remux, not here.
         "-map", "0:V?",
         "-map", "0:a?",
-        "-map", "0:s?",
-        "-map", "0:t?",
         "-map_metadata", "0",
-        # Drop the source video stream's (now-stale) statistics tags; the audio
-        # and subtitle streams are copied so their stats stay valid.
+        # Drop the source video stream's (now-stale) statistics tags.
         "-map_metadata:s:v:0", "-1",
         "-map_chapters", "0",
         "-max_muxing_queue_size", "9999",
-        # Force correct A/V interleaving. With sparse subtitle streams (e.g. PGS),
-        # ffmpeg's default 1s interleave window desynchronises packets: audio ends
-        # up written far from its video, so seeking (players, Jellyfin transcode)
-        # yields little/no audio. 0 = never break interleaving.
-        "-max_interleave_delta", "0",
     ]
     if probe.video_language:
         args += ["-metadata:s:v:0", f"language={probe.video_language}"]
@@ -130,11 +125,43 @@ def build_encode_command(
         raise ValueError(f"unsupported codec: {codec}")
 
     args += color_args(probe)
-    args += ["-c:a", "copy", "-c:s", "copy", "-c:t", "copy"]
-    args += subtitle_codec_overrides(probe)
+    args += ["-c:a", "copy"]
 
     if progress_to_stdout:
         args += ["-progress", "pipe:1", "-nostats"]
 
+    args.append(output_path)
+    return args
+
+
+def build_subtitle_mux_command(
+    *,
+    ffmpeg_bin: str,
+    video_audio_path: str,
+    source_path: str,
+    output_path: str,
+    probe: ProbeResult,
+) -> list[str]:
+    """Phase 2: copy the encoded video+audio and add subtitles/attachments.
+
+    Input 0 is the phase-1 output (encoded video + copied audio); input 1 is the
+    original source, used only for its subtitle and attachment streams. Nothing
+    is re-encoded (except MP4 ``mov_text`` -> SRT), so all streams are complete
+    and ``-max_interleave_delta 0`` gives a correctly interleaved, seekable MKV
+    — the sparse-subtitle interleave/truncation problem cannot occur here.
+    """
+    args = [
+        ffmpeg_bin, "-hide_banner", "-y",
+        "-i", video_audio_path,
+        "-i", source_path,
+        "-map", "0:v", "-map", "0:a?",
+        "-map", "1:s?", "-map", "1:t?",
+        "-map_metadata", "0",
+        "-map_chapters", "0",
+        "-c", "copy",
+        "-max_interleave_delta", "0",
+        "-max_muxing_queue_size", "9999",
+    ]
+    args += subtitle_codec_overrides(probe)
     args.append(output_path)
     return args
